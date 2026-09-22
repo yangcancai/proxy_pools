@@ -35,9 +35,12 @@ curl -fsSL "$API" -o "$release_json"
 DOWNLOAD_URL="$(python3 -c 'import json,sys; name=sys.argv[1]; data=json.load(open(sys.argv[2])); print(next(a["browser_download_url"] for a in data["assets"] if a["name"] == name))' "$ASSET" "$release_json")"
 RELEASE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$release_json")"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+fi
 ASSET_DIR=""
-if [[ ! -f "$SCRIPT_DIR/pp" || ! -f "$SCRIPT_DIR/proxy-pools.service" ]]; then
+if [[ -z "$SCRIPT_DIR" || ! -f "$SCRIPT_DIR/pp" || ! -f "$SCRIPT_DIR/proxy-pools.service" ]]; then
   RAW_BASE="${PROXY_POOLS_RAW_BASE:-https://raw.githubusercontent.com/${REPO}/main/deploy}"
   ASSET_DIR="$(mktemp -d)"
   SCRIPT_DIR="$ASSET_DIR"
