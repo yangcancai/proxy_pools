@@ -2,20 +2,25 @@
 set -euo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Run as root, for example: sudo bash install.sh 'https://...'" >&2
+  echo "Run as root, for example: sudo bash install.sh [subscription-url]" >&2
   exit 1
 fi
-if [[ $# -ne 1 || -z "$1" ]]; then
-  echo "Usage: install.sh <clash-subscription-url>" >&2
+if [[ $# -gt 1 ]]; then
+  echo "Usage: install.sh [clash-subscription-url]" >&2
   exit 2
 fi
 
-SUBSCRIPTION_URL="$1"
-REPO="${PROXY_POOLS_REPO:-}"
-if [[ -z "$REPO" ]]; then
-  echo "Set PROXY_POOLS_REPO=OWNER/REPOSITORY when installing from a GitHub release." >&2
-  exit 2
+SUBSCRIPTION_URL="${PROXY_SUBSCRIPTION_URL:-}"
+if [[ $# -eq 1 ]]; then
+  case "$1" in
+    http://*|https://*) SUBSCRIPTION_URL="$1" ;;
+    *) echo "Subscription URL must start with http:// or https://" >&2; exit 2 ;;
+  esac
 fi
+if [[ $# -eq 0 && -z "$SUBSCRIPTION_URL" && -r /etc/proxy-pools/proxy-pools.env ]]; then
+  SUBSCRIPTION_URL="$(sed -n 's/^PROXY_SUBSCRIPTION_URL=//p' /etc/proxy-pools/proxy-pools.env | head -n 1)"
+fi
+REPO="yangcancai/proxy_pools"
 
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;

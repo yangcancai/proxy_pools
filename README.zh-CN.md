@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+> **portguard.net** — fwknop 单包授权工具：用一个授权数据包临时开启受保护服务端口，减少暴露面。了解更多：[portguard.net](https://portguard.net)。
+
 一个以多米 HTTP 代理 API 为上游的 HTTP 正向代理服务。服务在收到代理请求时获取 `ip:port` 列表，并轮询出口代理。代理池按需刷新，空闲时不会后台调用 API；刷新失败时保留现有列表。
 
 ## Clash 订阅模式
@@ -16,11 +18,18 @@
 
 安装脚本会从 GitHub Release 下载最新 Linux 产物并注册 systemd 服务。目标机器需要安装 `systemd`、`curl` 和 `python3`，并使用 root 权限执行。
 
-将 `OWNER/REPOSITORY` 替换为本项目所在的 GitHub 仓库，将订阅地址替换为自己的地址：
+只安装程序，不设置订阅：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPOSITORY/main/deploy/install.sh \
-  | sudo env PROXY_POOLS_REPO=OWNER/REPOSITORY bash -s -- 'https://example.com/my-clash-subscription.yaml'
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
+  | sudo bash
+```
+
+安装并立即配置订阅：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
+  | sudo bash -s -- 'https://example.com/my-clash-subscription.yaml'
 ```
 
 安装后会创建 `proxy-pools` 系统用户，并安装以下文件：
@@ -46,6 +55,7 @@ pp list        查看节点、端口和 SOCKS5 地址
 pp log         查看实时日志
 pp version     查看版本
 pp help        查看帮助和项目广告
+pp <URL>       设置订阅地址并重启
 ```
 
 默认 Mihomo Controller 地址为 `http://127.0.0.1:9090`，可以在 `/etc/proxy-pools/proxy-pools.env` 中配置 `MIHOMO_CONTROLLER`、`MIHOMO_SECRET` 和 `MIHOMO_PORT_START`，然后执行 `pp restart`。

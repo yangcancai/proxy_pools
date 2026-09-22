@@ -2,6 +2,8 @@
 
 [中文说明](README.zh-CN.md)
 
+> **portguard.net** — fwknop single-packet authorization: temporarily open protected service ports with one authorization packet and reduce exposed attack surface. Learn more at [portguard.net](https://portguard.net).
+
 An HTTP forward proxy service backed by the Domi HTTP proxy API. It fetches an `ip:port` list on demand and rotates through upstream proxies for HTTP requests and HTTPS `CONNECT` tunnels. Idle services do not refresh in the background, and a failed refresh keeps the existing pool.
 
 ## Clash subscription mode
@@ -16,11 +18,18 @@ Pass a Clash subscription URL directly. proxy-pools downloads the matching Mihom
 
 The installer downloads the latest Linux binary from GitHub Releases and registers a systemd service. The target machine must have `systemd`, `curl`, and `python3`; the command must be run with root privileges.
 
-Replace `OWNER/REPOSITORY` with the GitHub repository that contains this project, and replace the subscription URL with your own URL:
+Install without configuring a subscription:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPOSITORY/main/deploy/install.sh \
-  | sudo env PROXY_POOLS_REPO=OWNER/REPOSITORY bash -s -- 'https://example.com/my-clash-subscription.yaml'
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
+  | sudo bash
+```
+
+Install and configure a subscription in one step by passing the URL as the script argument:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
+  | sudo bash -s -- 'https://example.com/my-clash-subscription.yaml'
 ```
 
 The installer creates the `proxy-pools` system user and installs:
@@ -46,6 +55,7 @@ pp list        Show nodes, ports, and SOCKS5 endpoints
 pp log         Follow service logs
 pp version     Show the installed version
 pp help        Show help and the project sponsor link
+pp <URL>       Set the subscription URL and restart
 ```
 
 The default Mihomo controller is `http://127.0.0.1:9090`. Configure `MIHOMO_CONTROLLER`, `MIHOMO_SECRET`, or `MIHOMO_PORT_START` in `/etc/proxy-pools/proxy-pools.env`, then run `pp restart`.
