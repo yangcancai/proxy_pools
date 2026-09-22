@@ -55,3 +55,22 @@ API 链接通常包含密钥，生产环境应优先通过环境变量或 Secret
 go test ./...
 go build -o proxy-pools ./cmd/proxy-pools
 ```
+
+## Clash YAML 节点端口管理
+
+管理模式会自动从 Mihomo GitHub Releases 下载当前系统和架构对应的预编译程序，启动并管理 Mihomo 的生命周期，然后下载网络订阅，为每个节点创建一个本地 `mixed` 端口。`mixed` 同时接受 HTTP、HTTPS `CONNECT` 和 SOCKS5 请求；端口按 YAML 中 `proxies` 的顺序从 `19000` 开始分配。
+
+```bash
+./proxy-pools 'https://example.com/my-clash-subscription.yaml'
+```
+
+默认调用 `http://127.0.0.1:9090`；如有需要再通过 `MIHOMO_CONTROLLER`、`MIHOMO_SECRET`、`MIHOMO_PORT_START` 覆盖。Mihomo 缓存在系统用户缓存目录下，后续启动会复用已下载的程序。按 Ctrl-C 会停止 Mihomo。
+
+例如节点名为 `香港-01` 时，会创建一个指向该节点的 Mihomo listener；日志会打印实际端口。之后可以这样使用：
+
+```bash
+curl -x http://127.0.0.1:19000 https://example.com
+curl --socks5-hostname 127.0.0.1:19000 https://example.com
+```
+
+管理模式会在启动 Mihomo 前把 `listeners` 写入运行配置，由 Mihomo 直接创建端口；不会依赖动态 listener API。默认 listener 名称格式为 `proxy-pools-节点名`，可用 `-listener-prefix` 修改。原有的多米 API 模式仍按上面的启动方式工作。

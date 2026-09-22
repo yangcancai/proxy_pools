@@ -10,23 +10,34 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"proxy_pools/internal/clash"
+	"proxy_pools/internal/mihomo"
 	"proxy_pools/internal/proxypool"
 	"proxy_pools/internal/proxyserver"
 )
 
 type config struct {
-	listen          string
-	apiURL          string
-	refreshInterval time.Duration
-	fetchTimeout    time.Duration
-	dialTimeout     time.Duration
-	shutdownTimeout time.Duration
-	username        string
-	password        string
+	subscriptionURL  string
+	listen           string
+	apiURL           string
+	refreshInterval  time.Duration
+	fetchTimeout     time.Duration
+	dialTimeout      time.Duration
+	shutdownTimeout  time.Duration
+	username         string
+	password         string
+	clashConfig      string
+	mihomoController string
+	mihomoSecret     string
+	portStart        int
+	listenerPrefix   string
 }
 
 func main() {
@@ -34,6 +45,18 @@ func main() {
 	logger := log.New(os.Stdout, "proxy-pools ", log.LstdFlags|log.Lmsgprefix)
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.clashConfig != "" {
+		if err := syncMihomo(context.Background(), cfg, logger); err != nil {
+			logger.Fatalf("sync Mihomo listeners: %v", err)
+		}
+		return
+	}
+	if cfg.subscriptionURL != "" {
+		if err := runManagedMihomo(rootCtx, cfg, logger); err != nil {
+			logger.Fatalf("sync Mihomo listeners: %v", err)
+		}
+		return
+	}
 
 	fetcher := proxypool.NewFetcher(cfg.apiURL, cfg.username, cfg.password, cfg.fetchTimeout)
 	fetcher.Logger = logger
@@ -239,8 +262,27 @@ func parseConfig() config {
 	flag.DurationVar(&cfg.shutdownTimeout, "shutdown-timeout", envDuration("PROXY_SHUTDOWN_TIMEOUT", 10*time.Second), "graceful shutdown timeout")
 	flag.StringVar(&cfg.username, "upstream-username", "", "optional upstream proxy username (or PROXY_UPSTREAM_USERNAME)")
 	flag.StringVar(&cfg.password, "upstream-password", "", "optional upstream proxy password (or PROXY_UPSTREAM_PASSWORD)")
+	flag.StringVar(&cfg.clashConfig, "clash-config", envOr("CLASH_CONFIG", ""), "Clash YAML to synchronize into Mihomo (management mode)")
+	flag.StringVar(&cfg.mihomoController, "mihomo-controller", envOr("MIHOMO_CONTROLLER", "http://127.0.0.1:9090"), "Mihomo external controller URL")
+	flag.StringVar(&cfg.mihomoSecret, "mihomo-secret", envOr("MIHOMO_SECRET", ""), "Mihomo external controller secret")
+	flag.IntVar(&cfg.portStart, "port-start", envInt("MIHOMO_PORT_START", 19000), "first local port used in management mode")
+	flag.StringVar(&cfg.listenerPrefix, "listener-prefix", envOr("MIHOMO_LISTENER_PREFIX", "proxy-pools"), "listener name prefix in management mode")
 	flag.Parse()
+	if flag.NArg() > 1 {
+		fmt.Fprintln(os.Stderr, "usage: proxy-pools [subscription-url]")
+		os.Exit(2)
+	}
+	if flag.NArg() == 1 {
+		cfg.subscriptionURL = flag.Arg(0)
+	}
 
+	if cfg.subscriptionURL != "" || cfg.clashConfig != "" {
+		if cfg.portStart < 1 || cfg.portStart > 65535 {
+			fmt.Fprintln(os.Stderr, "-port-start must be between 1 and 65535")
+			os.Exit(2)
+		}
+		return cfg
+	}
 	if cfg.apiURL == "" {
 		cfg.apiURL = os.Getenv("PROXY_API_URL")
 	}
@@ -262,6 +304,97 @@ func parseConfig() config {
 	return cfg
 }
 
+func syncMihomo(ctx context.Context, cfg config, logger *log.Logger) error {
+	proxies, err := clash.ParseFile(cfg.clashConfig)
+	if err != nil {
+		return err
+	}
+	return syncMihomoProxies(ctx, cfg, logger, proxies)
+}
+
+func syncMihomoProxies(ctx context.Context, cfg config, logger *log.Logger, proxies []clash.Proxy) error {
+	client, err := mihomo.NewClient(cfg.mihomoController, cfg.mihomoSecret)
+	if err != nil {
+		return err
+	}
+	for index, proxy := range proxies {
+		port := cfg.portStart + index
+		if port > 65535 {
+			return fmt.Errorf("too many proxies: port range exceeds 65535")
+		}
+		listener := mihomo.Listener{
+			Name:   mihomo.ListenerName(cfg.listenerPrefix, proxy.Name),
+			Type:   "mixed",
+			Listen: "127.0.0.1",
+			Port:   port,
+			Proxy:  proxy.Name,
+		}
+		if err := client.PutListener(ctx, listener); err != nil {
+			return err
+		}
+		logger.Printf("Mihomo listener ready name=%s port=%d proxy=%s", listener.Name, listener.Port, listener.Proxy)
+	}
+	return nil
+}
+
+func syncMihomoURL(ctx context.Context, cfg config, logger *log.Logger) error {
+	proxies, err := clash.FetchURL(ctx, cfg.subscriptionURL, &http.Client{Timeout: cfg.fetchTimeout})
+	if err != nil {
+		return err
+	}
+	return syncMihomoProxies(ctx, cfg, logger, proxies)
+}
+
+func runManagedMihomo(ctx context.Context, cfg config, logger *log.Logger) error {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("find cache directory: %w", err)
+	}
+	cacheDir = filepath.Join(cacheDir, "proxy-pools")
+	binary, err := mihomo.DownloadLatest(ctx, filepath.Join(cacheDir, "bin"), &http.Client{Timeout: 2 * time.Minute}, logger)
+	if err != nil {
+		return err
+	}
+	subscription, err := clash.DownloadURL(ctx, cfg.subscriptionURL, &http.Client{Timeout: cfg.fetchTimeout})
+	if err != nil {
+		return err
+	}
+	if _, err := clash.Parse(subscription); err != nil {
+		return err
+	}
+	runtimeDir := filepath.Join(cacheDir, "runtime")
+	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+		return err
+	}
+	controller := cfg.mihomoController
+	runtimeConfig, err := clash.PrepareRuntimeConfig(subscription, strings.TrimPrefix(strings.TrimPrefix(controller, "http://"), "https://"), cfg.mihomoSecret, cfg.listenerPrefix, cfg.portStart)
+	if err != nil {
+		return err
+	}
+	configPath := filepath.Join(runtimeDir, "config.yaml")
+	if err := os.WriteFile(configPath, runtimeConfig, 0600); err != nil {
+		return err
+	}
+	cmd, err := mihomo.Start(binary, runtimeDir, configPath, logger)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = cmd.Process.Signal(syscall.SIGTERM); _ = cmd.Wait() }()
+	client, err := mihomo.NewClient(controller, cfg.mihomoSecret)
+	if err != nil {
+		return err
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err = client.WaitReady(readyCtx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	logger.Printf("Mihomo is running; press Ctrl-C to stop")
+	<-ctx.Done()
+	return nil
+}
+
 func envOr(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -280,4 +413,17 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		os.Exit(2)
 	}
 	return duration
+}
+
+func envInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s must be an integer: %v\n", key, err)
+		os.Exit(2)
+	}
+	return parsed
 }
