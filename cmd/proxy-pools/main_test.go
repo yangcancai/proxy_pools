@@ -6,12 +6,32 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"proxy_pools/internal/clash"
 	"proxy_pools/internal/proxypool"
 )
+
+func TestWriteListenerList(t *testing.T) {
+	directory := t.TempDir()
+	cfg := config{portStart: 19000, listenerPrefix: "proxy-pools"}
+	if err := writeListenerList(directory, cfg, []clash.Proxy{{Name: "node-one"}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(directory + "/listeners.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"proxy-pools-node-one", "19000", "socks5://127.0.0.1:19000"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("listener list %q does not contain %q", data, want)
+		}
+	}
+}
 
 func TestOnDemandRefresherOnlyFetchesWhenRequestedAndDue(t *testing.T) {
 	proxyURL := mustProxyURL(t, "http://127.0.0.1:15001")

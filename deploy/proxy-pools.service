@@ -1,5 +1,5 @@
 [Unit]
-Description=proxy-pools HTTP forward proxy
+Description=proxy-pools managed Mihomo proxy service
 Wants=network-online.target
 After=network-online.target
 
@@ -7,16 +7,18 @@ After=network-online.target
 Type=simple
 User=proxy-pools
 Group=proxy-pools
-WorkingDirectory=/data/proxy_pools
-EnvironmentFile=/data/proxy_pools/proxy_pools.env
-ExecStart=/data/proxy_pools/proxy_pools
+WorkingDirectory=/var/lib/proxy-pools
+EnvironmentFile=/etc/proxy-pools/proxy-pools.env
+Environment=XDG_CACHE_HOME=/var/lib/proxy-pools/cache
+ExecStart=/usr/local/libexec/proxy-pools-start
 Restart=on-failure
 RestartSec=5s
 KillSignal=SIGTERM
 TimeoutStopSec=15s
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=/var/lib/proxy-pools /home/proxy-pools/.cache
 ProtectHome=true
 StandardOutput=journal
 StandardError=journal

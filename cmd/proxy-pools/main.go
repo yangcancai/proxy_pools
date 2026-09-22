@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -359,11 +360,15 @@ func runManagedMihomo(ctx context.Context, cfg config, logger *log.Logger) error
 	if err != nil {
 		return err
 	}
-	if _, err := clash.Parse(subscription); err != nil {
+	proxies, err := clash.Parse(subscription)
+	if err != nil {
 		return err
 	}
 	runtimeDir := filepath.Join(cacheDir, "runtime")
 	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+		return err
+	}
+	if err := writeListenerList(runtimeDir, cfg, proxies); err != nil {
 		return err
 	}
 	controller := cfg.mihomoController
@@ -393,6 +398,34 @@ func runManagedMihomo(ctx context.Context, cfg config, logger *log.Logger) error
 	logger.Printf("Mihomo is running; press Ctrl-C to stop")
 	<-ctx.Done()
 	return nil
+}
+
+type managedListener struct {
+	Name   string `json:"name"`
+	Port   int    `json:"port"`
+	Proxy  string `json:"proxy"`
+	SOCKS5 string `json:"socks5"`
+}
+
+func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy) error {
+	listeners := make([]managedListener, 0, len(proxies))
+	for index, proxy := range proxies {
+		port := cfg.portStart + index
+		if port > 65535 {
+			return fmt.Errorf("too many proxies: port range exceeds 65535")
+		}
+		listeners = append(listeners, managedListener{
+			Name:   mihomo.ListenerName(cfg.listenerPrefix, proxy.Name),
+			Port:   port,
+			Proxy:  proxy.Name,
+			SOCKS5: fmt.Sprintf("socks5://127.0.0.1:%d", port),
+		})
+	}
+	data, err := json.MarshalIndent(listeners, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(runtimeDir, "listeners.json"), append(data, '\n'), 0600)
 }
 
 func envOr(key, fallback string) string {

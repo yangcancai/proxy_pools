@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="proxy-pools"
+LISTENERS_FILE="/var/lib/proxy-pools/cache/proxy-pools/runtime/listeners.json"
+
+usage() {
+  cat <<'EOF'
+Usage: pp <start|stop|restart|status|list|log>
+
+  start    Start proxy-pools and Mihomo
+  stop     Stop proxy-pools and Mihomo
+  restart  Restart proxy-pools and Mihomo
+  status   Show systemd service status
+  list     Show node names, local ports, and SOCKS5 endpoints
+  log      Follow recent service logs
+EOF
+}
+
+case "${1:-}" in
+  start) systemctl start "$SERVICE" ;;
+  stop) systemctl stop "$SERVICE" ;;
+  restart) systemctl restart "$SERVICE" ;;
+  status) systemctl status "$SERVICE" --no-pager ;;
+  log) journalctl -u "$SERVICE" -n "${2:-100}" -f ;;
+  list)
+    if ! systemctl is-active --quiet "$SERVICE"; then
+      echo "proxy-pools is not running" >&2
+      exit 1
+    fi
+    if [[ ! -r "$LISTENERS_FILE" ]]; then
+      echo "listener list is not available: $LISTENERS_FILE" >&2
+      exit 1
+    fi
+    python3 -c '
+import json, sys
+items = json.load(open(sys.argv[1]))
+print("NAME\tPORT\tPROXY\tSOCKS5")
+for item in items:
+    if not isinstance(item, dict): continue
+    name = item.get("name", "-")
+    port = item.get("port", "-")
+    proxy = item.get("proxy", "-")
+    print(f"{name}\t{port}\t{proxy}\t{item.get('socks5', f'socks5://127.0.0.1:{port}')}")
+' "$LISTENERS_FILE"
+    ;;
+  ""|help|-h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
