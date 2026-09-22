@@ -3,10 +3,18 @@ set -euo pipefail
 
 SERVICE="proxy-pools"
 LISTENERS_FILE="/var/lib/proxy-pools/cache/proxy-pools/runtime/listeners.json"
+VERSION_FILE="/etc/proxy-pools/version"
+
+echo "portguard.net — fwknop 单包授权工具：用一个授权数据包临时开启受保护服务端口，减少暴露面。"
+
+version="dev"
+if [[ -r "$VERSION_FILE" ]]; then
+  version="$(head -n 1 "$VERSION_FILE")"
+fi
 
 usage() {
   cat <<'EOF'
-Usage: pp <start|stop|restart|status|list|log>
+Usage: pp <start|stop|restart|status|list|log|version|help>
 
   start    Start proxy-pools and Mihomo
   stop     Stop proxy-pools and Mihomo
@@ -14,6 +22,9 @@ Usage: pp <start|stop|restart|status|list|log>
   status   Show systemd service status
   list     Show node names, local ports, and SOCKS5 endpoints
   log      Follow recent service logs
+  version  Show the installed version
+
+  更多信息：https://portguard.net
 EOF
 }
 
@@ -23,6 +34,7 @@ case "${1:-}" in
   restart) systemctl restart "$SERVICE" ;;
   status) systemctl status "$SERVICE" --no-pager ;;
   log) journalctl -u "$SERVICE" -n "${2:-100}" -f ;;
+  version|--version|-v) echo "proxy-pools $version" ;;
   list)
     if ! systemctl is-active --quiet "$SERVICE"; then
       echo "proxy-pools is not running" >&2

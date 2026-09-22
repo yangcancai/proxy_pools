@@ -29,6 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/REPOSITORY/main/deploy/instal
 | --- | --- |
 | `/opt/proxy-pools/proxy_pools` | 程序文件 |
 | `/etc/proxy-pools/proxy-pools.env` | 订阅地址和 Mihomo 配置 |
+| `/etc/proxy-pools/version` | 已安装的 Release 版本 |
 | `/etc/systemd/system/proxy-pools.service` | systemd 服务 |
 | `/usr/local/bin/pp` | 服务管理命令 |
 
@@ -43,6 +44,8 @@ pp restart     重启
 pp status      查看状态
 pp list        查看节点、端口和 SOCKS5 地址
 pp log         查看实时日志
+pp version     查看版本
+pp help        查看帮助和项目广告
 ```
 
 默认 Mihomo Controller 地址为 `http://127.0.0.1:9090`，可以在 `/etc/proxy-pools/proxy-pools.env` 中配置 `MIHOMO_CONTROLLER`、`MIHOMO_SECRET` 和 `MIHOMO_PORT_START`，然后执行 `pp restart`。

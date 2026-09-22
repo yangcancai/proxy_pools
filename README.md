@@ -29,6 +29,7 @@ The installer creates the `proxy-pools` system user and installs:
 | --- | --- |
 | `/opt/proxy-pools/proxy_pools` | Installed binary |
 | `/etc/proxy-pools/proxy-pools.env` | Subscription and Mihomo settings |
+| `/etc/proxy-pools/version` | Installed Release version |
 | `/etc/systemd/system/proxy-pools.service` | systemd service |
 | `/usr/local/bin/pp` | Service management command |
 
@@ -43,6 +44,8 @@ pp restart     Restart the service
 pp status      Show service status
 pp list        Show nodes, ports, and SOCKS5 endpoints
 pp log         Follow service logs
+pp version     Show the installed version
+pp help        Show help and the project sponsor link
 ```
 
 The default Mihomo controller is `http://127.0.0.1:9090`. Configure `MIHOMO_CONTROLLER`, `MIHOMO_SECRET`, or `MIHOMO_PORT_START` in `/etc/proxy-pools/proxy-pools.env`, then run `pp restart`.
