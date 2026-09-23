@@ -56,7 +56,7 @@ pp list        Show nodes, ports, and SOCKS5 endpoints
 pp listen IP   Set the listener bind address and restart
 pp allowlist    Show the client IP allowlist
 pp allowlist IPs  Set comma-separated IPs/CIDRs and restart
-pp reset-auth  Regenerate all listener usernames and passwords
+pp reset-auth  Regenerate all listener passwords
 pp reset-password  Alias for pp reset-auth
 pp export      Export current proxies as JSON
 pp export quick [--protocol socks|http|https] Export one proxy URL per line

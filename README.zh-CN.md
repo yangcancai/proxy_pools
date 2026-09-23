@@ -56,7 +56,7 @@ pp list        查看节点、端口和 SOCKS5 地址
 pp listen IP   修改监听地址并重启
 pp allowlist    查看客户端 IP 白名单
 pp allowlist IPs  设置逗号分隔的 IP/CIDR 并重启
-pp reset-auth  重置所有 listener 用户名和密码
+pp reset-auth  重置所有 listener 密码（用户名按节点固定生成）
 pp reset-password  reset-auth 的别名
 pp export      导出当前节点 JSON
 pp export quick [--protocol socks|http|https] 每行导出一个代理地址

@@ -33,6 +33,19 @@ func TestWriteListenerList(t *testing.T) {
 	}
 }
 
+func TestRandomListenerCredentialsIdentifyProxy(t *testing.T) {
+	username, password, err := randomListenerCredentials(clash.Proxy{Name: "US Node / 01", Server: "144.225.247.69"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if username != "pp_us_node_01_144_225_247_69" {
+		t.Fatalf("username %q does not identify node and server", username)
+	}
+	if len(password) != 32 {
+		t.Fatalf("password length = %d, want 32", len(password))
+	}
+}
+
 func TestOnDemandRefresherOnlyFetchesWhenRequestedAndDue(t *testing.T) {
 	proxyURL := mustProxyURL(t, "http://127.0.0.1:15001")
 	fetcher := &countingFetcher{results: []fetchResult{

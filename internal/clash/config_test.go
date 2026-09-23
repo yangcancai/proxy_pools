@@ -7,12 +7,15 @@ import (
 )
 
 func TestParse(t *testing.T) {
-	proxies, err := Parse([]byte("proxies:\n  - name: hk\n    type: ss\n  - name: '日本 / 01'\n    type: vmess\n"))
+	proxies, err := Parse([]byte("proxies:\n  - name: hk\n    type: ss\n    server: 1.2.3.4\n  - name: '日本 / 01'\n    type: vmess\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(proxies) != 2 || proxies[1].Name != "日本 / 01" {
 		t.Fatalf("proxies = %#v", proxies)
+	}
+	if proxies[0].Server != "1.2.3.4" {
+		t.Fatalf("proxy server = %q", proxies[0].Server)
 	}
 }
 
@@ -38,12 +41,12 @@ func TestMergeSubscriptionsDeduplicatesProxyNames(t *testing.T) {
 
 func TestExportJSON(t *testing.T) {
 	data := []byte("proxies:\n  - name: bitflow\n    type: socks5\n    server: 144.225.247.69\n    port: 1080\n    username: my_ss\n    password: '123456'\n")
-	result, err := ExportJSON(data, time.Date(2026, 9, 23, 2, 5, 34, 0, time.UTC))
+	result, err := ExportJSON(data, time.Date(2026, 9, 23, 2, 5, 34, 0, time.UTC), "127.0.0.1", map[string]int{"bitflow": 19000}, map[string]Auth{"bitflow": {Username: "local-user", Password: "local-pass"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(result)
-	for _, want := range []string{"\"proxy_key\": \"socks5|144.225.247.69|1080|my_ss|123456\"", "\"status\": \"active\"", "\"expiry_warn_days\": 7"} {
+	for _, want := range []string{"\"proxy_key\": \"socks5|127.0.0.1|19000|local-user|local-pass\"", "\"protocol\": \"socks5\"", "\"host\": \"127.0.0.1\"", "\"status\": \"active\"", "\"expiry_warn_days\": 7"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("export = %s, missing %q", text, want)
 		}

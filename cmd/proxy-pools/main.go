@@ -477,7 +477,7 @@ func startManagedMihomo(ctx context.Context, cfg config, logger *log.Logger, bin
 	if err := writeListenerList(dataDir, cfg, proxies, portByName, authByName); err != nil {
 		return nil, err
 	}
-	export, err := clash.ExportJSON(subscription, time.Now())
+	export, err := clash.ExportJSON(subscription, time.Now(), listenerAddress(), portByName, authByName)
 	if err != nil {
 		return nil, err
 	}
@@ -638,7 +638,7 @@ func loadListenerAuth(path string, proxies []clash.Proxy) (map[string]clash.Auth
 		if _, exists := auth[proxy.Name]; exists {
 			continue
 		}
-		username, password, err := randomListenerCredentials()
+		username, password, err := randomListenerCredentials(proxy)
 		if err != nil {
 			return nil, err
 		}
@@ -655,16 +655,41 @@ func loadListenerAuth(path string, proxies []clash.Proxy) (map[string]clash.Auth
 	return auth, nil
 }
 
-func randomListenerCredentials() (string, string, error) {
-	usernameBytes := make([]byte, 6)
+func randomListenerCredentials(proxy clash.Proxy) (string, string, error) {
 	passwordBytes := make([]byte, 16)
-	if _, err := rand.Read(usernameBytes); err != nil {
-		return "", "", err
-	}
 	if _, err := rand.Read(passwordBytes); err != nil {
 		return "", "", err
 	}
-	return "pp_" + hex.EncodeToString(usernameBytes), hex.EncodeToString(passwordBytes), nil
+	nodePart := credentialPart(proxy.Name)
+	serverPart := credentialPart(proxy.Server)
+	if len(nodePart) > 12 {
+		nodePart = nodePart[:12]
+	}
+	if len(serverPart) > 15 {
+		serverPart = serverPart[:15]
+	}
+	username := "pp_" + nodePart + "_" + serverPart
+	return username, hex.EncodeToString(passwordBytes), nil
+}
+
+func credentialPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var result strings.Builder
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			result.WriteRune(char)
+		} else if result.Len() > 0 && !strings.HasSuffix(result.String(), "_") {
+			result.WriteByte('_')
+		}
+	}
+	part := strings.Trim(result.String(), "_")
+	if part == "" {
+		part = "unknown"
+	}
+	if len(part) > 24 {
+		part = part[:24]
+	}
+	return part
 }
 
 func writeListenerPorts(path string, portByName map[string]int) error {

@@ -19,7 +19,8 @@ const maxSubscriptionSize = 10 << 20
 // The complete definition is intentionally not interpreted here: Mihomo is
 // responsible for parsing and running the node itself.
 type Proxy struct {
-	Name string
+	Name   string `yaml:"name"`
+	Server string `yaml:"server"`
 }
 
 type Export struct {
@@ -41,7 +42,10 @@ type ExportProxy struct {
 	ExpiryWarnDays int    `json:"expiry_warn_days"`
 }
 
-func ExportJSON(data []byte, now time.Time) ([]byte, error) {
+// ExportJSON creates an export of the locally generated SOCKS5 listeners.
+// The source node fields are used for the display name, while the endpoint
+// fields point at the managed local listener that clients can actually use.
+func ExportJSON(data []byte, now time.Time, listenHost string, portByName map[string]int, authByName map[string]Auth) ([]byte, error) {
 	var config map[string]any
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("parse Clash YAML for export: %w", err)
@@ -62,6 +66,15 @@ func ExportJSON(data []byte, now time.Time) ([]byte, error) {
 		port := yamlInt(proxy["port"])
 		username, _ := proxy["username"].(string)
 		password, _ := proxy["password"].(string)
+		if listenerPort, ok := portByName[name]; ok {
+			protocol = "socks5"
+			host = listenHost
+			port = listenerPort
+			if auth, ok := authByName[name]; ok {
+				username = auth.Username
+				password = auth.Password
+			}
+		}
 		item := ExportProxy{
 			ProxyKey:       fmt.Sprintf("%s|%s|%d|%s|%s", protocol, host, port, username, password),
 			Name:           name,

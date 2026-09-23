@@ -89,7 +89,7 @@ Usage: pp <start|stop|restart|status|list|log|version|help|subscription-url>
   listen IP  Set the listener bind address and restart
   allowlist   Show allowed client IPs
   allowlist IPs  Set comma-separated IPs/CIDRs and restart
-  reset-auth  Regenerate all listener usernames and passwords
+  reset-auth  Regenerate all listener passwords
   reset-password  Alias for reset-auth
   subscriptions  Show configured subscription URLs
   add URL  Add a subscription URL and restart
@@ -185,7 +185,7 @@ case "${1:-}" in
     require_root "$1"
     : > "$AUTH_FILE"
     systemctl restart "$SERVICE"
-    echo "All listener usernames and passwords were reset; service restarted."
+    echo "All listener passwords were reset; deterministic usernames were kept; service restarted."
     ;;
   export)
     if [[ "${2:-}" == "quick" || "${2:-}" == "--quick" ]]; then
