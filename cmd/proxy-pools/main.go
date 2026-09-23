@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -421,11 +420,12 @@ func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy) err
 			SOCKS5: fmt.Sprintf("socks5://127.0.0.1:%d", port),
 		})
 	}
-	data, err := json.MarshalIndent(listeners, "", "  ")
-	if err != nil {
-		return err
+	var data strings.Builder
+	data.WriteString("NAME\tPORT\tPROXY\tSOCKS5\n")
+	for _, listener := range listeners {
+		fmt.Fprintf(&data, "%s\t%d\t%s\t%s\n", listener.Name, listener.Port, listener.Proxy, listener.SOCKS5)
 	}
-	return os.WriteFile(filepath.Join(runtimeDir, "listeners.json"), append(data, '\n'), 0600)
+	return os.WriteFile(filepath.Join(runtimeDir, "listeners.tsv"), []byte(data.String()), 0600)
 }
 
 func envOr(key, fallback string) string {

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SERVICE="proxy-pools"
-LISTENERS_FILE="/var/lib/proxy-pools/cache/proxy-pools/runtime/listeners.json"
+LISTENERS_FILE="/var/lib/proxy-pools/cache/proxy-pools/runtime/listeners.tsv"
 VERSION_FILE="/etc/proxy-pools/version"
 
 echo "portguard.net — fwknop 单包授权工具：用一个授权数据包临时开启受保护服务端口，减少暴露面。"
@@ -57,17 +57,7 @@ case "${1:-}" in
       echo "listener list is not available: $LISTENERS_FILE" >&2
       exit 1
     fi
-    python3 -c '
-import json, sys
-items = json.load(open(sys.argv[1]))
-print("NAME\tPORT\tPROXY\tSOCKS5")
-for item in items:
-    if not isinstance(item, dict): continue
-    name = item.get("name", "-")
-    port = item.get("port", "-")
-    proxy = item.get("proxy", "-")
-    print(f"{name}\t{port}\t{proxy}\t{item.get('socks5', f'socks5://127.0.0.1:{port}')}")
-' "$LISTENERS_FILE"
+    cat "$LISTENERS_FILE"
     ;;
   ""|help|-h|--help) usage ;;
   *) usage >&2; exit 2 ;;

@@ -16,20 +16,18 @@ Pass a Clash subscription URL directly. proxy-pools downloads the matching Mihom
 
 ## One-command installation (Linux)
 
-The installer downloads the latest Linux binary from GitHub Releases and registers a systemd service. The target machine must have `systemd`, `curl`, and `python3`; the command must be run with root privileges.
+The installer downloads the latest Linux binary from GitHub Releases and registers a systemd service. The target machine must have `systemd` and `curl`; the command must be run with root privileges.
 
 Install without configuring a subscription:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
-  | sudo bash
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh | sudo bash
 ```
 
 Install and configure a subscription in one step by passing the URL as the script argument:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
-  | sudo bash -s -- 'https://example.com/my-clash-subscription.yaml'
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh | sudo bash -s -- 'https://example.com/my-clash-subscription.yaml'
 ```
 
 The installer creates the `proxy-pools` system user and installs:

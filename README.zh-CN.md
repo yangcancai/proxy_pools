@@ -16,20 +16,18 @@
 
 ## 一键安装（Linux）
 
-安装脚本会从 GitHub Release 下载最新 Linux 产物并注册 systemd 服务。目标机器需要安装 `systemd`、`curl` 和 `python3`，并使用 root 权限执行。
+安装脚本会从 GitHub Release 下载最新 Linux 产物并注册 systemd 服务。目标机器需要安装 `systemd` 和 `curl`，并使用 root 权限执行。
 
 只安装程序，不设置订阅：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
-  | sudo bash
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh | sudo bash
 ```
 
 安装并立即配置订阅：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh \
-  | sudo bash -s -- 'https://example.com/my-clash-subscription.yaml'
+curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/install.sh | sudo bash -s -- 'https://example.com/my-clash-subscription.yaml'
 ```
 
 安装后会创建 `proxy-pools` 系统用户，并安装以下文件：

@@ -22,7 +22,7 @@ func TestWriteListenerList(t *testing.T) {
 	if err := writeListenerList(directory, cfg, []clash.Proxy{{Name: "node-one"}}); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(directory + "/listeners.json")
+	data, err := os.ReadFile(directory + "/listeners.tsv")
 	if err != nil {
 		t.Fatal(err)
 	}

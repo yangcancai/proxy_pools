@@ -28,12 +28,8 @@ case "$(uname -m)" in
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 ASSET="proxy_pools_linux_${ARCH}"
-API="https://api.github.com/repos/${REPO}/releases/latest"
-release_json="$(mktemp)"
-trap 'rm -f "${release_json:-}"' EXIT
-curl -fsSL "$API" -o "$release_json"
-DOWNLOAD_URL="$(python3 -c 'import json,sys; name=sys.argv[1]; data=json.load(open(sys.argv[2])); print(next(a["browser_download_url"] for a in data["assets"] if a["name"] == name))' "$ASSET" "$release_json")"
-RELEASE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$release_json")"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+RELEASE_VERSION="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" | sed 's#.*/tag/##')"
 
 SCRIPT_DIR=""
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
@@ -53,7 +49,7 @@ if ! id proxy-pools >/dev/null 2>&1; then
   useradd --system --home-dir /home/proxy-pools --create-home --shell /usr/sbin/nologin proxy-pools
 fi
 tmp="$(mktemp)"
-trap 'rm -f "${tmp:-}" "${release_json:-}"; if [[ -n "${ASSET_DIR:-}" ]]; then rm -rf "$ASSET_DIR"; fi' EXIT
+trap 'rm -f "${tmp:-}"; if [[ -n "${ASSET_DIR:-}" ]]; then rm -rf "$ASSET_DIR"; fi' EXIT
 curl -fL --retry 3 -o "$tmp" "$DOWNLOAD_URL"
 install -o root -g root -m 0755 "$tmp" /opt/proxy-pools/proxy_pools
 install -o root -g root -m 0755 "$SCRIPT_DIR/pp" /usr/local/bin/pp
