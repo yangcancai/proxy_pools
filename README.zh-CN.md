@@ -53,6 +53,13 @@ pp stop        停止
 pp restart     重启
 pp status      查看状态
 pp list        查看节点、端口和 SOCKS5 地址
+pp listen IP   修改监听地址并重启
+pp allowlist    查看客户端 IP 白名单
+pp allowlist IPs  设置逗号分隔的 IP/CIDR 并重启
+pp reset-auth  重置所有 listener 用户名和密码
+pp reset-password  reset-auth 的别名
+pp export      导出当前节点 JSON
+pp export quick [--protocol socks|http|https] 每行导出一个代理地址
 pp subscriptions  查看当前订阅列表
 pp add URL      添加订阅并重启
 pp remove N     删除订阅并重启
@@ -68,6 +75,24 @@ pp <URL>       设置订阅地址并重启
 默认 Mihomo Controller 地址为 `http://127.0.0.1:9090`，可以在 `/etc/proxy-pools/proxy-pools.env` 中配置 `MIHOMO_CONTROLLER`、`MIHOMO_SECRET` 和 `MIHOMO_PORT_START`，然后执行 `pp restart`。
 
 订阅默认每小时自动更新。可以设置 `MIHOMO_SUBSCRIPTION_REFRESH=30m` 修改间隔，或执行 `sudo pp update` 立即更新。
+
+监听地址默认是 `127.0.0.1`。如需监听所有网卡，可以执行 `sudo pp listen 0.0.0.0`；也可以设置为指定服务器 IP。使用 `sudo pp export /tmp/proxies.json` 导出当前合并后的节点。导出内容包含代理凭据，请妥善保护导出文件。
+
+如需快速导入截图中的代理列表工具，可以指定客户端可访问的地址：
+
+```bash
+sudo pp export quick --host 192.168.1.20 /tmp/proxies.txt
+sudo pp export quick --protocol http --host 192.168.1.20
+sudo pp export quick --protocol https --host 192.168.1.20
+sudo pp export quick --docker /tmp/proxies.txt
+sudo pp export quick --docker
+```
+
+默认协议是 `socks5`，也可以使用 `socks`、`http` 或 `https` 选择导出的 URL 协议。`--docker` 会使用 `host.docker.internal`。导出结果每行一个带认证的地址，例如 `socks5://user:pass@192.168.1.20:19000`。
+
+可以使用 `sudo pp allowlist 203.0.113.10,10.0.0.0/8` 设置客户端 IP 白名单；使用 `sudo pp allowlist off` 关闭。其他来源地址会在代理转发前被拒绝。
+
+每个自动生成的本地 listener 都会自动分配随机用户名和密码，并持久化到 `/var/lib/proxy-pools/auth.tsv`。`pp list` 会显示带认证信息的 SOCKS5 地址，例如 `socks5://pp_xxx:password@127.0.0.1:19000`。
 
 例如：
 

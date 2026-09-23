@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,12 +26,49 @@ type Handler struct {
 	dialer         net.Dialer
 	logger         *log.Logger
 	prepareRequest func(context.Context) error
+	allowedIPs     []*net.IPNet
 }
 
 // SetRequestPreparer registers a callback that runs before an upstream proxy
 // is selected. Configure it before the HTTP server starts serving requests.
 func (h *Handler) SetRequestPreparer(prepare func(context.Context) error) {
 	h.prepareRequest = prepare
+}
+
+func (h *Handler) SetAllowedIPs(value string) error {
+	allowed, err := parseAllowedIPs(value)
+	if err != nil {
+		return err
+	}
+	h.allowedIPs = allowed
+	return nil
+}
+
+func parseAllowedIPs(value string) ([]*net.IPNet, error) {
+	var allowed []*net.IPNet
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if !strings.Contains(item, "/") {
+			ip := net.ParseIP(item)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid allowlist IP %q", item)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			item += "/" + strconv.Itoa(bits)
+		}
+		_, network, err := net.ParseCIDR(item)
+		if err != nil {
+			return nil, fmt.Errorf("invalid allowlist network %q: %w", item, err)
+		}
+		allowed = append(allowed, network)
+	}
+	return allowed, nil
 }
 
 func New(pool *proxypool.Pool, dialTimeout time.Duration, logger *log.Logger) *Handler {
@@ -71,6 +109,10 @@ func (h *Handler) CloseIdleConnections() {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if !h.isAllowed(req) {
+		http.Error(w, "client IP is not allowed", http.StatusForbidden)
+		return
+	}
 	if h.prepareRequest != nil {
 		if err := h.prepareRequest(req.Context()); err != nil {
 			h.proxyError(w, req, "prepare upstream proxy pool", err)
@@ -82,6 +124,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	h.handleHTTP(w, req)
+}
+
+func (h *Handler) isAllowed(req *http.Request) bool {
+	if len(h.allowedIPs) == 0 {
+		return true
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, network := range h.allowedIPs {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) handleHTTP(w http.ResponseWriter, req *http.Request) {

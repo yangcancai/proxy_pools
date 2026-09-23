@@ -3,6 +3,7 @@ package clash
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParse(t *testing.T) {
@@ -35,13 +36,27 @@ func TestMergeSubscriptionsDeduplicatesProxyNames(t *testing.T) {
 	}
 }
 
-func TestPrepareRuntimeConfigAddsListeners(t *testing.T) {
-	data := []byte("proxies:\n  - name: one\n    type: ss\n")
-	runtimeConfig, err := PrepareRuntimeConfig(data, "127.0.0.1:9090", "secret", "proxy-pools", 19000, map[string]int{"one": 20000})
+func TestExportJSON(t *testing.T) {
+	data := []byte("proxies:\n  - name: bitflow\n    type: socks5\n    server: 144.225.247.69\n    port: 1080\n    username: my_ss\n    password: '123456'\n")
+	result, err := ExportJSON(data, time.Date(2026, 9, 23, 2, 5, 34, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(runtimeConfig); !containsAll(got, "listeners:", "port: 20000", "proxy: one", "external-controller: 127.0.0.1:9090") {
+	text := string(result)
+	for _, want := range []string{"\"proxy_key\": \"socks5|144.225.247.69|1080|my_ss|123456\"", "\"status\": \"active\"", "\"expiry_warn_days\": 7"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("export = %s, missing %q", text, want)
+		}
+	}
+}
+
+func TestPrepareRuntimeConfigAddsListeners(t *testing.T) {
+	data := []byte("proxies:\n  - name: one\n    type: ss\n")
+	runtimeConfig, err := PrepareRuntimeConfig(data, "127.0.0.1:9090", "secret", "proxy-pools", 19000, map[string]int{"one": 20000}, map[string]Auth{"one": {Username: "user", Password: "pass"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(runtimeConfig); !containsAll(got, "listeners:", "port: 20000", "proxy: one", "username: user", "external-controller: 127.0.0.1:9090") {
 		t.Fatalf("runtime config = %s", got)
 	}
 }

@@ -53,6 +53,13 @@ pp stop        Stop the service
 pp restart     Restart the service
 pp status      Show service status
 pp list        Show nodes, ports, and SOCKS5 endpoints
+pp listen IP   Set the listener bind address and restart
+pp allowlist    Show the client IP allowlist
+pp allowlist IPs  Set comma-separated IPs/CIDRs and restart
+pp reset-auth  Regenerate all listener usernames and passwords
+pp reset-password  Alias for pp reset-auth
+pp export      Export current proxies as JSON
+pp export quick [--protocol socks|http|https] Export one proxy URL per line
 pp subscriptions  Show configured subscriptions
 pp add URL      Add a subscription and restart
 pp remove N     Remove a subscription and restart
@@ -68,6 +75,24 @@ Multiple subscriptions are merged by node name; duplicate names keep the first s
 The default Mihomo controller is `http://127.0.0.1:9090`. Configure `MIHOMO_CONTROLLER`, `MIHOMO_SECRET`, or `MIHOMO_PORT_START` in `/etc/proxy-pools/proxy-pools.env`, then run `pp restart`.
 
 Managed subscriptions refresh every hour by default. Set `MIHOMO_SUBSCRIPTION_REFRESH=30m` to change the interval, or run `sudo pp update` for an immediate refresh.
+
+Listeners bind to `127.0.0.1` by default. To expose them on all interfaces, use `sudo pp listen 0.0.0.0`; use a specific server address when appropriate. Export the current merged nodes with `sudo pp export /tmp/proxies.json`. The export contains proxy credentials, so protect the output file.
+
+For quick import into proxy-list tools, use `sudo pp export quick` or specify the address visible to clients:
+
+```bash
+sudo pp export quick --host 192.168.1.20 /tmp/proxies.txt
+sudo pp export quick --protocol http --host 192.168.1.20
+sudo pp export quick --protocol https --host 192.168.1.20
+sudo pp export quick --docker /tmp/proxies.txt
+sudo pp export quick --docker
+```
+
+The default protocol is `socks5`; use `socks`, `http`, or `https` to select the exported URL scheme. The Docker form uses `host.docker.internal`. It outputs one authenticated URL per line, such as `socks5://user:pass@192.168.1.20:19000`.
+
+Set an optional client IP allowlist with `sudo pp allowlist 203.0.113.10,10.0.0.0/8`; use `sudo pp allowlist off` to disable it. Requests from other addresses are rejected before proxy forwarding.
+
+Each generated local listener also receives a random username and password, persisted in `/var/lib/proxy-pools/auth.tsv`. `pp list` prints the authenticated SOCKS5 endpoint, for example `socks5://pp_xxx:password@127.0.0.1:19000`.
 
 For example:
 

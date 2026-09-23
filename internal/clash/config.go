@@ -2,11 +2,13 @@ package clash
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,9 +22,89 @@ type Proxy struct {
 	Name string
 }
 
+type Export struct {
+	ExportedAt string        `json:"exported_at"`
+	Proxies    []ExportProxy `json:"proxies"`
+	Accounts   []any         `json:"accounts"`
+}
+
+type ExportProxy struct {
+	ProxyKey       string `json:"proxy_key"`
+	Name           string `json:"name"`
+	Protocol       string `json:"protocol"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	Status         string `json:"status"`
+	FallbackMode   string `json:"fallback_mode"`
+	ExpiryWarnDays int    `json:"expiry_warn_days"`
+}
+
+func ExportJSON(data []byte, now time.Time) ([]byte, error) {
+	var config map[string]any
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parse Clash YAML for export: %w", err)
+	}
+	items, ok := config["proxies"].([]any)
+	if !ok || len(items) == 0 {
+		return nil, fmt.Errorf("Clash YAML has no proxies to export")
+	}
+	export := Export{ExportedAt: now.UTC().Format(time.RFC3339), Proxies: make([]ExportProxy, 0, len(items)), Accounts: []any{}}
+	for _, item := range items {
+		proxy, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := proxy["name"].(string)
+		protocol, _ := proxy["type"].(string)
+		host, _ := proxy["server"].(string)
+		port := yamlInt(proxy["port"])
+		username, _ := proxy["username"].(string)
+		password, _ := proxy["password"].(string)
+		item := ExportProxy{
+			ProxyKey:       fmt.Sprintf("%s|%s|%d|%s|%s", protocol, host, port, username, password),
+			Name:           name,
+			Protocol:       protocol,
+			Host:           host,
+			Port:           port,
+			Username:       username,
+			Password:       password,
+			Status:         "active",
+			FallbackMode:   "none",
+			ExpiryWarnDays: 7,
+		}
+		export.Proxies = append(export.Proxies, item)
+	}
+	result, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("write proxy export: %w", err)
+	}
+	return append(result, '\n'), nil
+}
+
+func yamlInt(value any) int {
+	switch value := value.(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case uint64:
+		return int(value)
+	case float64:
+		return int(value)
+	case string:
+		var result int
+		_, _ = fmt.Sscanf(value, "%d", &result)
+		return result
+	default:
+		return 0
+	}
+}
+
 // PrepareRuntimeConfig makes a subscription usable by the managed Mihomo
 // process without modifying the downloaded subscription in place.
-func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string, portStart int, portByName map[string]int) ([]byte, error) {
+func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string, portStart int, portByName map[string]int, authByName map[string]Auth) ([]byte, error) {
 	var config map[string]any
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("parse Clash YAML: %w", err)
@@ -31,6 +113,16 @@ func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string
 		return nil, fmt.Errorf("Clash YAML is empty")
 	}
 	config["external-controller"] = controller
+	listenAddress := strings.TrimSpace(os.Getenv("MIHOMO_LISTEN"))
+	if listenAddress == "" {
+		listenAddress = "127.0.0.1"
+	}
+	if listenAddress != "127.0.0.1" && listenAddress != "::1" {
+		config["allow-lan"] = true
+	}
+	if allowIPs := configuredAllowIPs(); len(allowIPs) > 0 {
+		config["lan-allowed-ips"] = allowIPs
+	}
 	if secret != "" {
 		config["secret"] = secret
 	}
@@ -39,10 +131,6 @@ func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string
 		return nil, err
 	}
 	listeners := make([]map[string]any, 0, len(proxies))
-	listenAddress := strings.TrimSpace(os.Getenv("MIHOMO_LISTEN"))
-	if listenAddress == "" {
-		listenAddress = "127.0.0.1"
-	}
 	for index, proxy := range proxies {
 		port := portStart + index
 		if mappedPort, ok := portByName[proxy.Name]; ok {
@@ -51,13 +139,17 @@ func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string
 		if port > 65535 {
 			return nil, fmt.Errorf("too many proxies: port range exceeds 65535")
 		}
-		listeners = append(listeners, map[string]any{
+		listener := map[string]any{
 			"name":   strings.TrimSuffix(listenerPrefix, "-") + "-" + proxy.Name,
 			"type":   "mixed",
 			"listen": listenAddress,
 			"port":   port,
 			"proxy":  proxy.Name,
-		})
+		}
+		if auth, ok := authByName[proxy.Name]; ok {
+			listener["users"] = []map[string]string{{"username": auth.Username, "password": auth.Password}}
+		}
+		listeners = append(listeners, listener)
 	}
 	config["listeners"] = listeners
 	result, err := yaml.Marshal(config)
@@ -65,6 +157,22 @@ func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string
 		return nil, fmt.Errorf("write runtime Clash YAML: %w", err)
 	}
 	return result, nil
+}
+
+func configuredAllowIPs() []string {
+	values := strings.Split(os.Getenv("PROXY_ALLOW_IPS"), ",")
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+type Auth struct {
+	Username string
+	Password string
 }
 
 // Config is a Clash configuration containing the inline proxies section.

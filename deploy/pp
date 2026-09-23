@@ -2,12 +2,17 @@
 set -euo pipefail
 
 SERVICE="proxy-pools"
+ENV_FILE="/etc/proxy-pools/proxy-pools.env"
 LISTENERS_FILE="/var/lib/proxy-pools/listeners.tsv"
+AUTH_FILE="/var/lib/proxy-pools/auth.tsv"
+EXPORT_FILE="/var/lib/proxy-pools/proxies.json"
 VERSION_FILE="/etc/proxy-pools/version"
 SUBSCRIPTIONS_FILE="/var/lib/proxy-pools/subscriptions.enc"
 SUBSCRIPTIONS_KEY="/etc/proxy-pools/subscriptions.key"
 
-echo "portguard.net — fwknop 单包授权工具：用一个授权数据包临时开启受保护服务端口，减少暴露面。"
+if [[ "${1:-}" != "export" || "${2:-}" != "quick" && "${2:-}" != "--quick" ]]; then
+  echo "portguard.net — fwknop 单包授权工具：用一个授权数据包临时开启受保护服务端口，减少暴露面。"
+fi
 
 version="dev"
 if [[ -r "$VERSION_FILE" ]]; then
@@ -59,6 +64,17 @@ add_subscription() {
   rm -f "$file"
 }
 
+set_runtime_value() {
+  local key="$1" value="$2" temporary
+  temporary="$(mktemp)"
+  if [[ -f "$ENV_FILE" ]]; then
+    sed "/^${key}=/d" "$ENV_FILE" > "$temporary"
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$temporary"
+  install -o root -g root -m 0600 "$temporary" "$ENV_FILE"
+  rm -f "$temporary"
+}
+
 usage() {
   cat <<'EOF'
 Usage: pp <start|stop|restart|status|list|log|version|help|subscription-url>
@@ -68,6 +84,13 @@ Usage: pp <start|stop|restart|status|list|log|version|help|subscription-url>
   restart  Restart proxy-pools and Mihomo
   status   Show systemd service status
   list     Show node names, local ports, and SOCKS5 endpoints
+  export   Export current proxies as JSON or quick proxy URLs
+           quick [--protocol socks|http|https] --host IP|--docker [file]
+  listen IP  Set the listener bind address and restart
+  allowlist   Show allowed client IPs
+  allowlist IPs  Set comma-separated IPs/CIDRs and restart
+  reset-auth  Regenerate all listener usernames and passwords
+  reset-password  Alias for reset-auth
   subscriptions  Show configured subscription URLs
   add URL  Add a subscription URL and restart
   remove N Remove a subscription by number or URL and restart
@@ -132,6 +155,103 @@ case "${1:-}" in
   update)
     systemctl kill -s HUP "$SERVICE"
     echo "Subscription refresh requested."
+    ;;
+  listen|listen-address)
+    [[ $# -eq 2 ]] || { echo "Usage: sudo pp listen <ip-address>" >&2; exit 2; }
+    require_root "listen $2"
+    set_runtime_value MIHOMO_LISTEN "$2"
+    systemctl restart "$SERVICE"
+    echo "Listener address set to $2; service restarted."
+    ;;
+  allowlist)
+    require_root "allowlist ${2:-}"
+    [[ $# -le 2 ]] || { echo "Usage: sudo pp allowlist [ip-or-cidr,...|off]" >&2; exit 2; }
+    if [[ $# -eq 1 ]]; then
+      value="$(sed -n 's/^PROXY_ALLOW_IPS=//p' "$ENV_FILE" | head -n 1)"
+      if [[ -n "$value" ]]; then echo "$value"; else echo "IP allowlist disabled."; fi
+    else
+      value="$2"
+      if [[ "$value" == "off" ]]; then value=""; fi
+      set_runtime_value PROXY_ALLOW_IPS "$value"
+      systemctl restart "$SERVICE"
+      if [[ -n "$value" ]]; then
+        echo "IP allowlist set to $value; service restarted."
+      else
+        echo "IP allowlist disabled; service restarted."
+      fi
+    fi
+    ;;
+  reset-auth|reset-password)
+    require_root "$1"
+    : > "$AUTH_FILE"
+    systemctl restart "$SERVICE"
+    echo "All listener usernames and passwords were reset; service restarted."
+    ;;
+  export)
+    if [[ "${2:-}" == "quick" || "${2:-}" == "--quick" ]]; then
+      export_host=""
+      export_protocol="socks5"
+      output_file=""
+      shift 2
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --docker) export_host="host.docker.internal"; shift ;;
+          --protocol)
+            [[ $# -ge 2 ]] || { echo "Usage: pp export quick [--protocol socks|http|https] [--host <ip>|--docker] [file]" >&2; exit 2; }
+            export_protocol="$2"
+            shift 2
+            ;;
+          --protocol=*) export_protocol="${1#--protocol=}"; shift ;;
+          --host)
+            [[ $# -ge 2 ]] || { echo "Usage: pp export quick [--protocol socks|http|https] --host <ip> [file]" >&2; exit 2; }
+            export_host="$2"
+            shift 2
+            ;;
+          --host=*) export_host="${1#--host=}"; shift ;;
+          -*) echo "Unknown export option: $1" >&2; exit 2 ;;
+          *)
+            [[ -z "$output_file" ]] || { echo "Usage: pp export quick [--docker|--host <ip>] [file]" >&2; exit 2; }
+            output_file="$1"
+            shift
+            ;;
+        esac
+      done
+      case "$export_protocol" in
+        socks|socks5) export_protocol="socks5" ;;
+        http|https) ;;
+        *) echo "Unsupported export protocol: $export_protocol (use socks, http, or https)" >&2; exit 2 ;;
+      esac
+      if [[ ! -r "$LISTENERS_FILE" ]]; then
+        echo "listener list is not available: $LISTENERS_FILE" >&2
+        exit 1
+      fi
+      if [[ -n "$export_host" ]]; then
+        if [[ "$export_host" == *:* && "$export_host" != \[*\] ]]; then
+          export_host="[$export_host]"
+        fi
+        quick_command=(awk -F '\t' -v host="$export_host" -v scheme="$export_protocol" 'NR == 1 { next } NF >= 6 { print scheme "://" $4 ":" $5 "@" host ":" $2 } NF == 4 { sub(/^[^:]+:/, scheme ":", $4); print $4 }' "$LISTENERS_FILE")
+      else
+        quick_command=(awk -F '\t' -v scheme="$export_protocol" 'NR == 1 { next } NF >= 6 { sub(/^[^:]+:/, scheme ":", $6); print $6 } NF == 4 { sub(/^[^:]+:/, scheme ":", $4); print $4 }' "$LISTENERS_FILE")
+      fi
+      if [[ -n "$output_file" ]]; then
+        "${quick_command[@]}" > "$output_file"
+        echo "Exported quick proxy URLs to $output_file."
+      else
+        "${quick_command[@]}"
+      fi
+    else
+      [[ $# -le 2 ]] || { echo "Usage: pp export [file]" >&2; exit 2; }
+      if [[ ! -r "$EXPORT_FILE" ]]; then
+        echo "proxy export is not available: $EXPORT_FILE" >&2
+        exit 1
+      fi
+      if [[ $# -eq 2 ]]; then
+        cp "$EXPORT_FILE" "$2"
+        echo "Exported proxies to $2."
+      else
+        cat "$EXPORT_FILE"
+      fi
+    fi
     ;;
   http://*|https://*)
     if [[ "$(id -u)" -ne 0 ]]; then

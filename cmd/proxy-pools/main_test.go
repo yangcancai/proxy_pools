@@ -19,14 +19,14 @@ import (
 func TestWriteListenerList(t *testing.T) {
 	directory := t.TempDir()
 	cfg := config{portStart: 19000, listenerPrefix: "proxy-pools"}
-	if err := writeListenerList(directory, cfg, []clash.Proxy{{Name: "node-one"}}, map[string]int{"node-one": 19000}); err != nil {
+	if err := writeListenerList(directory, cfg, []clash.Proxy{{Name: "node-one"}}, map[string]int{"node-one": 19000}, map[string]clash.Auth{"node-one": {Username: "user", Password: "pass"}}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(directory + "/listeners.tsv")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"proxy-pools-node-one", "19000", "socks5://127.0.0.1:19000"} {
+	for _, want := range []string{"proxy-pools-node-one", "19000", "user", "pass", "socks5://user:pass@127.0.0.1:19000"} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("listener list %q does not contain %q", data, want)
 		}

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -70,6 +72,9 @@ func main() {
 	refresher := newOnDemandRefresher(rootCtx, fetcher, pool, cfg.refreshInterval, logger)
 
 	handler := proxyserver.New(pool, cfg.dialTimeout, logger)
+	if err := handler.SetAllowedIPs(os.Getenv("PROXY_ALLOW_IPS")); err != nil {
+		logger.Fatalf("invalid PROXY_ALLOW_IPS: %v", err)
+	}
 	handler.SetRequestPreparer(refresher.Ensure)
 	server := &http.Server{
 		Addr:              cfg.listen,
@@ -465,14 +470,25 @@ func startManagedMihomo(ctx context.Context, cfg config, logger *log.Logger, bin
 	if err := writeListenerPorts(filepath.Join(dataDir, "ports.tsv"), portByName); err != nil {
 		return nil, err
 	}
-	if err := writeListenerList(dataDir, cfg, proxies, portByName); err != nil {
+	authByName, err := loadListenerAuth(filepath.Join(dataDir, "auth.tsv"), proxies)
+	if err != nil {
 		return nil, err
 	}
-	if err := writeListenerList(runtimeDir, cfg, proxies, portByName); err != nil {
+	if err := writeListenerList(dataDir, cfg, proxies, portByName, authByName); err != nil {
+		return nil, err
+	}
+	export, err := clash.ExportJSON(subscription, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "proxies.json"), export, 0600); err != nil {
+		return nil, err
+	}
+	if err := writeListenerList(runtimeDir, cfg, proxies, portByName, authByName); err != nil {
 		return nil, err
 	}
 	controller := cfg.mihomoController
-	runtimeConfig, err := clash.PrepareRuntimeConfig(subscription, strings.TrimPrefix(strings.TrimPrefix(controller, "http://"), "https://"), cfg.mihomoSecret, cfg.listenerPrefix, cfg.portStart, portByName)
+	runtimeConfig, err := clash.PrepareRuntimeConfig(subscription, strings.TrimPrefix(strings.TrimPrefix(controller, "http://"), "https://"), cfg.mihomoSecret, cfg.listenerPrefix, cfg.portStart, portByName, authByName)
 	if err != nil {
 		return nil, err
 	}
@@ -509,10 +525,12 @@ func stopManagedMihomo(process *os.Process) {
 }
 
 type managedListener struct {
-	Name   string `json:"name"`
-	Port   int    `json:"port"`
-	Proxy  string `json:"proxy"`
-	SOCKS5 string `json:"socks5"`
+	Name     string `json:"name"`
+	Port     int    `json:"port"`
+	Proxy    string `json:"proxy"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	SOCKS5   string `json:"socks5"`
 }
 
 func loadListenerPorts(path string) (map[string]int, error) {
@@ -567,7 +585,7 @@ func allocateListenerPorts(proxies []clash.Proxy, cfg config, existing map[strin
 	return ports, nil
 }
 
-func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy, portByName map[string]int) error {
+func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy, portByName map[string]int, authByName map[string]clash.Auth) error {
 	listeners := make([]managedListener, 0, len(proxies))
 	for _, proxy := range proxies {
 		port := portByName[proxy.Name]
@@ -575,18 +593,78 @@ func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy, por
 			return fmt.Errorf("too many proxies: port range exceeds 65535")
 		}
 		listeners = append(listeners, managedListener{
-			Name:   mihomo.ListenerName(cfg.listenerPrefix, proxy.Name),
-			Port:   port,
-			Proxy:  proxy.Name,
-			SOCKS5: fmt.Sprintf("socks5://127.0.0.1:%d", port),
+			Name:     mihomo.ListenerName(cfg.listenerPrefix, proxy.Name),
+			Port:     port,
+			Proxy:    proxy.Name,
+			Username: authByName[proxy.Name].Username,
+			Password: authByName[proxy.Name].Password,
+			SOCKS5:   fmt.Sprintf("socks5://%s:%s@%s:%d", authByName[proxy.Name].Username, authByName[proxy.Name].Password, listenerAddress(), port),
 		})
 	}
 	var data strings.Builder
 	data.WriteString("NAME\tPORT\tPROXY\tSOCKS5\n")
 	for _, listener := range listeners {
-		fmt.Fprintf(&data, "%s\t%d\t%s\t%s\n", listener.Name, listener.Port, listener.Proxy, listener.SOCKS5)
+		fmt.Fprintf(&data, "%s\t%d\t%s\t%s\t%s\t%s\n", listener.Name, listener.Port, listener.Proxy, listener.Username, listener.Password, listener.SOCKS5)
 	}
 	return os.WriteFile(filepath.Join(runtimeDir, "listeners.tsv"), []byte(data.String()), 0600)
+}
+
+func listenerAddress() string {
+	if address := strings.TrimSpace(os.Getenv("MIHOMO_LISTEN")); address != "" {
+		return address
+	}
+	return "127.0.0.1"
+}
+
+func loadListenerAuth(path string, proxies []clash.Proxy) (map[string]clash.Auth, error) {
+	auth := make(map[string]clash.Auth)
+	file, err := os.Open(path)
+	if err == nil {
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			fields := strings.Split(scanner.Text(), "\t")
+			if len(fields) >= 3 && fields[0] != "NAME" {
+				auth[fields[0]] = clash.Auth{Username: fields[1], Password: fields[2]}
+			}
+		}
+		file.Close()
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, proxy := range proxies {
+		if _, exists := auth[proxy.Name]; exists {
+			continue
+		}
+		username, password, err := randomListenerCredentials()
+		if err != nil {
+			return nil, err
+		}
+		auth[proxy.Name] = clash.Auth{Username: username, Password: password}
+	}
+	var data strings.Builder
+	data.WriteString("NAME\tUSERNAME\tPASSWORD\n")
+	for name, credentials := range auth {
+		fmt.Fprintf(&data, "%s\t%s\t%s\n", name, credentials.Username, credentials.Password)
+	}
+	if err := os.WriteFile(path, []byte(data.String()), 0600); err != nil {
+		return nil, err
+	}
+	return auth, nil
+}
+
+func randomListenerCredentials() (string, string, error) {
+	usernameBytes := make([]byte, 6)
+	passwordBytes := make([]byte, 16)
+	if _, err := rand.Read(usernameBytes); err != nil {
+		return "", "", err
+	}
+	if _, err := rand.Read(passwordBytes); err != nil {
+		return "", "", err
+	}
+	return "pp_" + hex.EncodeToString(usernameBytes), hex.EncodeToString(passwordBytes), nil
 }
 
 func writeListenerPorts(path string, portByName map[string]int) error {
