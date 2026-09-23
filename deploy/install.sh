@@ -5,6 +5,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root, for example: sudo bash install.sh [subscription-url]" >&2
   exit 1
 fi
+if ! command -v openssl >/dev/null 2>&1; then
+  echo "openssl is required" >&2
+  exit 1
+fi
 if [[ $# -gt 1 ]]; then
   echo "Usage: install.sh [clash-subscription-url]" >&2
   exit 2
@@ -48,6 +52,11 @@ install -d -m 0755 /opt/proxy-pools /etc/proxy-pools /var/lib/proxy-pools /usr/l
 if ! id proxy-pools >/dev/null 2>&1; then
   useradd --system --home-dir /home/proxy-pools --create-home --shell /usr/sbin/nologin proxy-pools
 fi
+if [[ ! -s /etc/proxy-pools/subscriptions.key ]]; then
+  openssl rand -hex 32 > /etc/proxy-pools/subscriptions.key
+fi
+chown root:proxy-pools /etc/proxy-pools/subscriptions.key
+chmod 0640 /etc/proxy-pools/subscriptions.key
 tmp="$(mktemp)"
 trap 'rm -f "${tmp:-}"; if [[ -n "${ASSET_DIR:-}" ]]; then rm -rf "$ASSET_DIR"; fi' EXIT
 curl -fL --retry 3 -o "$tmp" "$DOWNLOAD_URL"
@@ -57,18 +66,44 @@ install -o root -g root -m 0755 "$SCRIPT_DIR/proxy-pools.service" /etc/systemd/s
 cat > /usr/local/libexec/proxy-pools-start <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-exec /opt/proxy-pools/proxy_pools "${PROXY_SUBSCRIPTION_URL:?PROXY_SUBSCRIPTION_URL is required}"
+SUBSCRIPTIONS_FILE=/var/lib/proxy-pools/subscriptions.enc
+SUBSCRIPTIONS_KEY=/etc/proxy-pools/subscriptions.key
+RUNTIME_SUBSCRIPTIONS=/run/proxy-pools/subscriptions
+if [[ ! -s "$SUBSCRIPTIONS_FILE" ]]; then
+  echo "No encrypted subscriptions configured; run: sudo pp add 'https://...'" >&2
+  exit 1
+fi
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass file:"$SUBSCRIPTIONS_KEY" \
+  -in "$SUBSCRIPTIONS_FILE" -out "$RUNTIME_SUBSCRIPTIONS"
+chmod 0600 "$RUNTIME_SUBSCRIPTIONS"
+trap 'rm -f "$RUNTIME_SUBSCRIPTIONS"' EXIT
+exec /opt/proxy-pools/proxy_pools
 EOF
 chmod 0755 /usr/local/libexec/proxy-pools-start
-printf 'PROXY_SUBSCRIPTION_URL=%q\n' "$SUBSCRIPTION_URL" > /etc/proxy-pools/proxy-pools.env
+if [[ -n "$SUBSCRIPTION_URL" ]]; then
+  printf '%s\n' "$SUBSCRIPTION_URL" | openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 \
+    -pass file:/etc/proxy-pools/subscriptions.key > /var/lib/proxy-pools/subscriptions.enc
+  chown proxy-pools:proxy-pools /var/lib/proxy-pools/subscriptions.enc
+  chmod 0600 /var/lib/proxy-pools/subscriptions.enc
+fi
+if [[ -f /etc/proxy-pools/proxy-pools.env ]]; then
+  sed '/^PROXY_SUBSCRIPTION_URL=/d' /etc/proxy-pools/proxy-pools.env > /etc/proxy-pools/proxy-pools.env.tmp
+  mv /etc/proxy-pools/proxy-pools.env.tmp /etc/proxy-pools/proxy-pools.env
+else
+  : > /etc/proxy-pools/proxy-pools.env
+fi
 printf '%s\n' "$RELEASE_VERSION" > /etc/proxy-pools/version
 chmod 0600 /etc/proxy-pools/proxy-pools.env
 chown -R proxy-pools:proxy-pools /var/lib/proxy-pools /home/proxy-pools
 systemctl daemon-reload
 systemctl enable proxy-pools
-if systemctl is-active --quiet proxy-pools; then
-  systemctl restart proxy-pools
+if [[ -s /var/lib/proxy-pools/subscriptions.enc ]]; then
+  if systemctl is-active --quiet proxy-pools; then
+    systemctl restart proxy-pools
+  else
+    systemctl start proxy-pools
+  fi
 else
-  systemctl start proxy-pools
+  echo "Installed without subscriptions. Run: sudo pp add 'https://...'"
 fi
 echo "Installed proxy-pools. Use 'pp status' and 'pp list'."

@@ -2,8 +2,10 @@
 set -euo pipefail
 
 SERVICE="proxy-pools"
-LISTENERS_FILE="/var/lib/proxy-pools/cache/proxy-pools/runtime/listeners.tsv"
+LISTENERS_FILE="/var/lib/proxy-pools/listeners.tsv"
 VERSION_FILE="/etc/proxy-pools/version"
+SUBSCRIPTIONS_FILE="/var/lib/proxy-pools/subscriptions.enc"
+SUBSCRIPTIONS_KEY="/etc/proxy-pools/subscriptions.key"
 
 echo "portguard.net — fwknop 单包授权工具：用一个授权数据包临时开启受保护服务端口，减少暴露面。"
 
@@ -11,6 +13,51 @@ version="dev"
 if [[ -r "$VERSION_FILE" ]]; then
   version="$(head -n 1 "$VERSION_FILE")"
 fi
+
+require_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "Run as root: sudo pp $*" >&2
+    exit 1
+  fi
+}
+
+load_subscriptions() {
+  local file="$1"
+  : > "$file"
+  if [[ -s "$SUBSCRIPTIONS_FILE" ]]; then
+    openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass file:"$SUBSCRIPTIONS_KEY" \
+      -in "$SUBSCRIPTIONS_FILE" -out "$file"
+  fi
+}
+
+save_subscriptions() {
+  local file="$1" encrypted
+  encrypted="$(mktemp)"
+  openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 -pass file:"$SUBSCRIPTIONS_KEY" \
+    -in "$file" -out "$encrypted"
+  install -o proxy-pools -g proxy-pools -m 0600 "$encrypted" "$SUBSCRIPTIONS_FILE"
+  rm -f "$encrypted"
+}
+
+add_subscription() {
+  require_root "add '$1'"
+  case "$1" in
+    http://*|https://*) ;;
+    *) echo "Subscription URL must start with http:// or https://" >&2; exit 2 ;;
+  esac
+  local file
+  file="$(mktemp)"
+  load_subscriptions "$file"
+  if ! grep -Fqx -- "$1" "$file"; then
+    printf '%s\n' "$1" >> "$file"
+    save_subscriptions "$file"
+    systemctl restart "$SERVICE"
+    echo "Subscription added and service restarted."
+  else
+    echo "Subscription already exists."
+  fi
+  rm -f "$file"
+}
 
 usage() {
   cat <<'EOF'
@@ -21,6 +68,10 @@ Usage: pp <start|stop|restart|status|list|log|version|help|subscription-url>
   restart  Restart proxy-pools and Mihomo
   status   Show systemd service status
   list     Show node names, local ports, and SOCKS5 endpoints
+  subscriptions  Show configured subscription URLs
+  add URL  Add a subscription URL and restart
+  remove N Remove a subscription by number or URL and restart
+  update   Refresh all subscriptions now
   log      Follow recent service logs
   version  Show the installed version
 
@@ -37,6 +88,51 @@ case "${1:-}" in
   status) systemctl status "$SERVICE" --no-pager ;;
   log) journalctl -u "$SERVICE" -n "${2:-100}" -f ;;
   version|--version|-v) echo "proxy-pools $version" ;;
+  add)
+    [[ $# -eq 2 ]] || { echo "Usage: sudo pp add <subscription-url>" >&2; exit 2; }
+    add_subscription "$2"
+    ;;
+  http://*|https://*) add_subscription "$1" ;;
+  subscriptions|subs)
+    require_root subscriptions
+    file="$(mktemp)"
+    load_subscriptions "$file"
+    if [[ -s "$file" ]]; then nl -ba "$file"; else echo "No subscriptions configured."; fi
+    rm -f "$file"
+    ;;
+  remove)
+    require_root "remove ${2:-}"
+    [[ $# -eq 2 ]] || { echo "Usage: sudo pp remove <number-or-url>" >&2; exit 2; }
+    file="$(mktemp)"
+    load_subscriptions "$file"
+    if [[ "$2" =~ ^[0-9]+$ ]]; then
+      awk -v remove="$2" 'NR != remove' "$file" > "$file.new"
+    else
+      grep -Fvx -- "$2" "$file" > "$file.new" || true
+    fi
+    if cmp -s "$file" "$file.new"; then
+      echo "Subscription not found." >&2
+      rm -f "$file" "$file.new"
+      exit 1
+    fi
+    if [[ -s "$file.new" ]]; then
+      save_subscriptions "$file.new"
+    else
+      rm -f "$SUBSCRIPTIONS_FILE"
+    fi
+    rm -f "$file" "$file.new"
+    if [[ -s "$SUBSCRIPTIONS_FILE" ]]; then
+      systemctl restart "$SERVICE"
+      echo "Subscription removed and service restarted."
+    else
+      systemctl stop "$SERVICE" || true
+      echo "Subscription removed; no subscriptions remain, service stopped."
+    fi
+    ;;
+  update)
+    systemctl kill -s HUP "$SERVICE"
+    echo "Subscription refresh requested."
+    ;;
   http://*|https://*)
     if [[ "$(id -u)" -ne 0 ]]; then
       echo "Run as root: sudo pp '$1'" >&2

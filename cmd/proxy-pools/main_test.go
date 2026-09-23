@@ -19,7 +19,7 @@ import (
 func TestWriteListenerList(t *testing.T) {
 	directory := t.TempDir()
 	cfg := config{portStart: 19000, listenerPrefix: "proxy-pools"}
-	if err := writeListenerList(directory, cfg, []clash.Proxy{{Name: "node-one"}}); err != nil {
+	if err := writeListenerList(directory, cfg, []clash.Proxy{{Name: "node-one"}}, map[string]int{"node-one": 19000}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(directory + "/listeners.tsv")

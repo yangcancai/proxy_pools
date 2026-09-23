@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -24,20 +26,21 @@ import (
 )
 
 type config struct {
-	subscriptionURL  string
-	listen           string
-	apiURL           string
-	refreshInterval  time.Duration
-	fetchTimeout     time.Duration
-	dialTimeout      time.Duration
-	shutdownTimeout  time.Duration
-	username         string
-	password         string
-	clashConfig      string
-	mihomoController string
-	mihomoSecret     string
-	portStart        int
-	listenerPrefix   string
+	subscriptionURLs    []string
+	listen              string
+	apiURL              string
+	refreshInterval     time.Duration
+	fetchTimeout        time.Duration
+	dialTimeout         time.Duration
+	shutdownTimeout     time.Duration
+	username            string
+	password            string
+	clashConfig         string
+	mihomoController    string
+	mihomoSecret        string
+	portStart           int
+	listenerPrefix      string
+	subscriptionRefresh time.Duration
 }
 
 func main() {
@@ -45,14 +48,17 @@ func main() {
 	logger := log.New(os.Stdout, "proxy-pools ", log.LstdFlags|log.Lmsgprefix)
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	refreshSignal := make(chan os.Signal, 1)
+	signal.Notify(refreshSignal, syscall.SIGHUP)
+	defer signal.Stop(refreshSignal)
 	if cfg.clashConfig != "" {
 		if err := syncMihomo(context.Background(), cfg, logger); err != nil {
 			logger.Fatalf("sync Mihomo listeners: %v", err)
 		}
 		return
 	}
-	if cfg.subscriptionURL != "" {
-		if err := runManagedMihomo(rootCtx, cfg, logger); err != nil {
+	if len(cfg.subscriptionURLs) > 0 {
+		if err := runManagedMihomo(rootCtx, cfg, logger, refreshSignal); err != nil {
 			logger.Fatalf("sync Mihomo listeners: %v", err)
 		}
 		return
@@ -267,18 +273,39 @@ func parseConfig() config {
 	flag.StringVar(&cfg.mihomoSecret, "mihomo-secret", envOr("MIHOMO_SECRET", ""), "Mihomo external controller secret")
 	flag.IntVar(&cfg.portStart, "port-start", envInt("MIHOMO_PORT_START", 19000), "first local port used in management mode")
 	flag.StringVar(&cfg.listenerPrefix, "listener-prefix", envOr("MIHOMO_LISTENER_PREFIX", "proxy-pools"), "listener name prefix in management mode")
+	flag.DurationVar(&cfg.subscriptionRefresh, "subscription-refresh", envDuration("MIHOMO_SUBSCRIPTION_REFRESH", time.Hour), "managed Clash subscription refresh interval")
 	flag.Parse()
-	if flag.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: proxy-pools [subscription-url]")
-		os.Exit(2)
+	if flag.NArg() > 0 {
+		for index := 0; index < flag.NArg(); index++ {
+			cfg.subscriptionURLs = append(cfg.subscriptionURLs, flag.Arg(index))
+		}
 	}
-	if flag.NArg() == 1 {
-		cfg.subscriptionURL = flag.Arg(0)
+	if subscriptionFile := os.Getenv("PROXY_SUBSCRIPTIONS_FILE"); subscriptionFile != "" {
+		data, err := os.ReadFile(subscriptionFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read PROXY_SUBSCRIPTIONS_FILE: %v\n", err)
+			os.Exit(2)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				cfg.subscriptionURLs = append(cfg.subscriptionURLs, line)
+			}
+		}
 	}
 
-	if cfg.subscriptionURL != "" || cfg.clashConfig != "" {
+	if len(cfg.subscriptionURLs) > 0 && cfg.clashConfig != "" {
+		fmt.Fprintln(os.Stderr, "subscription URLs and -clash-config cannot be used together")
+		os.Exit(2)
+	}
+
+	if len(cfg.subscriptionURLs) > 0 || cfg.clashConfig != "" {
 		if cfg.portStart < 1 || cfg.portStart > 65535 {
 			fmt.Fprintln(os.Stderr, "-port-start must be between 1 and 65535")
+			os.Exit(2)
+		}
+		if cfg.fetchTimeout <= 0 || cfg.shutdownTimeout <= 0 || cfg.subscriptionRefresh <= 0 {
+			fmt.Fprintln(os.Stderr, "managed Mihomo duration options must be greater than zero")
 			os.Exit(2)
 		}
 		return cfg
@@ -338,14 +365,17 @@ func syncMihomoProxies(ctx context.Context, cfg config, logger *log.Logger, prox
 }
 
 func syncMihomoURL(ctx context.Context, cfg config, logger *log.Logger) error {
-	proxies, err := clash.FetchURL(ctx, cfg.subscriptionURL, &http.Client{Timeout: cfg.fetchTimeout})
+	if len(cfg.subscriptionURLs) == 0 {
+		return fmt.Errorf("subscription URL is empty")
+	}
+	proxies, err := clash.FetchURL(ctx, cfg.subscriptionURLs[0], &http.Client{Timeout: cfg.fetchTimeout})
 	if err != nil {
 		return err
 	}
 	return syncMihomoProxies(ctx, cfg, logger, proxies)
 }
 
-func runManagedMihomo(ctx context.Context, cfg config, logger *log.Logger) error {
+func runManagedMihomo(ctx context.Context, cfg config, logger *log.Logger, refreshSignal <-chan os.Signal) error {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		return fmt.Errorf("find cache directory: %w", err)
@@ -355,11 +385,16 @@ func runManagedMihomo(ctx context.Context, cfg config, logger *log.Logger) error
 	if err != nil {
 		return err
 	}
-	subscription, err := clash.DownloadURL(ctx, cfg.subscriptionURL, &http.Client{Timeout: cfg.fetchTimeout})
+	subscription, proxies, err := fetchMergedSubscription(ctx, cfg.subscriptionURLs, cfg.fetchTimeout)
 	if err != nil {
 		return err
 	}
-	proxies, err := clash.Parse(subscription)
+	dataDir := envOr("PROXY_POOLS_DATA_DIR", filepath.Join(cacheDir, "data"))
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return err
+	}
+	portMapPath := filepath.Join(dataDir, "ports.tsv")
+	portByName, err := loadListenerPorts(portMapPath)
 	if err != nil {
 		return err
 	}
@@ -367,36 +402,110 @@ func runManagedMihomo(ctx context.Context, cfg config, logger *log.Logger) error
 	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
 		return err
 	}
-	if err := writeListenerList(runtimeDir, cfg, proxies); err != nil {
-		return err
-	}
-	controller := cfg.mihomoController
-	runtimeConfig, err := clash.PrepareRuntimeConfig(subscription, strings.TrimPrefix(strings.TrimPrefix(controller, "http://"), "https://"), cfg.mihomoSecret, cfg.listenerPrefix, cfg.portStart)
+	portByName, err = allocateListenerPorts(proxies, cfg, portByName)
 	if err != nil {
 		return err
+	}
+	cmd, err := startManagedMihomo(ctx, cfg, logger, binary, runtimeDir, dataDir, subscription, proxies, portByName)
+	if err != nil {
+		return err
+	}
+	defer stopManagedMihomo(cmd)
+	logger.Printf("Mihomo is running; subscription refresh interval=%s", cfg.subscriptionRefresh)
+
+	ticker := time.NewTicker(cfg.subscriptionRefresh)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-refreshSignal:
+		case <-ticker.C:
+		}
+
+		updatedSubscription, updatedProxies, fetchErr := fetchMergedSubscription(ctx, cfg.subscriptionURLs, cfg.fetchTimeout)
+		if fetchErr != nil {
+			logger.Printf("subscription refresh failed; retaining current listeners: %v", fetchErr)
+			continue
+		}
+		if bytes.Equal(updatedSubscription, subscription) {
+			logger.Printf("subscription unchanged; retaining current listeners")
+			continue
+		}
+		updatedPorts, allocateErr := allocateListenerPorts(updatedProxies, cfg, portByName)
+		if allocateErr != nil {
+			logger.Printf("subscription refresh cannot allocate listeners; retaining current listeners: %v", allocateErr)
+			continue
+		}
+		stopManagedMihomo(cmd)
+		cmd, err = startManagedMihomo(ctx, cfg, logger, binary, runtimeDir, dataDir, updatedSubscription, updatedProxies, updatedPorts)
+		if err != nil {
+			return err
+		}
+		subscription = updatedSubscription
+		proxies = updatedProxies
+		portByName = updatedPorts
+		logger.Printf("subscription updated: %d nodes, listeners refreshed", len(proxies))
+	}
+}
+
+func fetchMergedSubscription(ctx context.Context, urls []string, timeout time.Duration) ([]byte, []clash.Proxy, error) {
+	documents := make([][]byte, 0, len(urls))
+	for index, subscriptionURL := range urls {
+		document, err := clash.DownloadURL(ctx, subscriptionURL, &http.Client{Timeout: timeout})
+		if err != nil {
+			return nil, nil, fmt.Errorf("fetch subscription %d: %w", index+1, err)
+		}
+		documents = append(documents, document)
+	}
+	return clash.MergeSubscriptions(documents...)
+}
+
+func startManagedMihomo(ctx context.Context, cfg config, logger *log.Logger, binary, runtimeDir, dataDir string, subscription []byte, proxies []clash.Proxy, portByName map[string]int) (*os.Process, error) {
+	if err := writeListenerPorts(filepath.Join(dataDir, "ports.tsv"), portByName); err != nil {
+		return nil, err
+	}
+	if err := writeListenerList(dataDir, cfg, proxies, portByName); err != nil {
+		return nil, err
+	}
+	if err := writeListenerList(runtimeDir, cfg, proxies, portByName); err != nil {
+		return nil, err
+	}
+	controller := cfg.mihomoController
+	runtimeConfig, err := clash.PrepareRuntimeConfig(subscription, strings.TrimPrefix(strings.TrimPrefix(controller, "http://"), "https://"), cfg.mihomoSecret, cfg.listenerPrefix, cfg.portStart, portByName)
+	if err != nil {
+		return nil, err
 	}
 	configPath := filepath.Join(runtimeDir, "config.yaml")
 	if err := os.WriteFile(configPath, runtimeConfig, 0600); err != nil {
-		return err
+		return nil, err
 	}
 	cmd, err := mihomo.Start(binary, runtimeDir, configPath, logger)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer func() { _ = cmd.Process.Signal(syscall.SIGTERM); _ = cmd.Wait() }()
 	client, err := mihomo.NewClient(controller, cfg.mihomoSecret)
 	if err != nil {
-		return err
+		_ = cmd.Process.Kill()
+		return nil, err
 	}
 	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	err = client.WaitReady(readyCtx)
 	cancel()
 	if err != nil {
-		return err
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = cmd.Wait()
+		return nil, err
 	}
-	logger.Printf("Mihomo is running; press Ctrl-C to stop")
-	<-ctx.Done()
-	return nil
+	return cmd.Process, nil
+}
+
+func stopManagedMihomo(process *os.Process) {
+	if process == nil {
+		return
+	}
+	_ = process.Signal(syscall.SIGTERM)
+	_, _ = process.Wait()
 }
 
 type managedListener struct {
@@ -406,10 +515,62 @@ type managedListener struct {
 	SOCKS5 string `json:"socks5"`
 }
 
-func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy) error {
+func loadListenerPorts(path string) (map[string]int, error) {
+	ports := make(map[string]int)
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return ports, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), "\t")
+		if len(fields) < 2 || fields[0] == "NAME" {
+			continue
+		}
+		port, err := strconv.Atoi(fields[1])
+		if err == nil && port >= 1 && port <= 65535 {
+			ports[fields[0]] = port
+		}
+	}
+	return ports, scanner.Err()
+}
+
+func allocateListenerPorts(proxies []clash.Proxy, cfg config, existing map[string]int) (map[string]int, error) {
+	ports := make(map[string]int, len(proxies))
+	used := make(map[int]struct{}, len(proxies))
+	nextPort := cfg.portStart
+	for _, proxy := range proxies {
+		if port, ok := existing[proxy.Name]; ok {
+			if _, duplicate := used[port]; !duplicate {
+				ports[proxy.Name] = port
+				used[port] = struct{}{}
+				continue
+			}
+		}
+		for {
+			if nextPort > 65535 {
+				return nil, fmt.Errorf("too many proxies: port range exceeds 65535")
+			}
+			if _, occupied := used[nextPort]; !occupied {
+				ports[proxy.Name] = nextPort
+				used[nextPort] = struct{}{}
+				nextPort++
+				break
+			}
+			nextPort++
+		}
+	}
+	return ports, nil
+}
+
+func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy, portByName map[string]int) error {
 	listeners := make([]managedListener, 0, len(proxies))
-	for index, proxy := range proxies {
-		port := cfg.portStart + index
+	for _, proxy := range proxies {
+		port := portByName[proxy.Name]
 		if port > 65535 {
 			return fmt.Errorf("too many proxies: port range exceeds 65535")
 		}
@@ -426,6 +587,15 @@ func writeListenerList(runtimeDir string, cfg config, proxies []clash.Proxy) err
 		fmt.Fprintf(&data, "%s\t%d\t%s\t%s\n", listener.Name, listener.Port, listener.Proxy, listener.SOCKS5)
 	}
 	return os.WriteFile(filepath.Join(runtimeDir, "listeners.tsv"), []byte(data.String()), 0600)
+}
+
+func writeListenerPorts(path string, portByName map[string]int) error {
+	var data strings.Builder
+	data.WriteString("NAME\tPORT\n")
+	for name, port := range portByName {
+		fmt.Fprintf(&data, "%s\t%d\n", name, port)
+	}
+	return os.WriteFile(path, []byte(data.String()), 0600)
 }
 
 func envOr(key, fallback string) string {

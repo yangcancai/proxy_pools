@@ -22,7 +22,7 @@ type Proxy struct {
 
 // PrepareRuntimeConfig makes a subscription usable by the managed Mihomo
 // process without modifying the downloaded subscription in place.
-func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string, portStart int) ([]byte, error) {
+func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string, portStart int, portByName map[string]int) ([]byte, error) {
 	var config map[string]any
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("parse Clash YAML: %w", err)
@@ -39,15 +39,22 @@ func PrepareRuntimeConfig(data []byte, controller, secret, listenerPrefix string
 		return nil, err
 	}
 	listeners := make([]map[string]any, 0, len(proxies))
+	listenAddress := strings.TrimSpace(os.Getenv("MIHOMO_LISTEN"))
+	if listenAddress == "" {
+		listenAddress = "127.0.0.1"
+	}
 	for index, proxy := range proxies {
 		port := portStart + index
+		if mappedPort, ok := portByName[proxy.Name]; ok {
+			port = mappedPort
+		}
 		if port > 65535 {
 			return nil, fmt.Errorf("too many proxies: port range exceeds 65535")
 		}
 		listeners = append(listeners, map[string]any{
 			"name":   strings.TrimSuffix(listenerPrefix, "-") + "-" + proxy.Name,
 			"type":   "mixed",
-			"listen": "127.0.0.1",
+			"listen": listenAddress,
 			"port":   port,
 			"proxy":  proxy.Name,
 		})
@@ -133,4 +140,57 @@ func Parse(data []byte) ([]Proxy, error) {
 		result = append(result, proxy)
 	}
 	return result, nil
+}
+
+// MergeSubscriptions combines Clash subscriptions, keeping the first proxy
+// with a given name so the resulting configuration remains valid for Mihomo.
+func MergeSubscriptions(documents ...[]byte) ([]byte, []Proxy, error) {
+	if len(documents) == 0 {
+		return nil, nil, fmt.Errorf("no Clash subscriptions")
+	}
+	var mergedConfig map[string]any
+	merged := make([]any, 0)
+	seen := make(map[string]struct{})
+	for index, document := range documents {
+		var config map[string]any
+		if err := yaml.Unmarshal(document, &config); err != nil {
+			return nil, nil, fmt.Errorf("parse Clash subscription %d: %w", index+1, err)
+		}
+		if index == 0 {
+			mergedConfig = config
+		}
+		items, ok := config["proxies"].([]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("Clash subscription %d has no inline proxies", index+1)
+		}
+		for _, item := range items {
+			proxy, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := proxy["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if _, exists := seen[name]; exists {
+				continue
+			}
+			seen[name] = struct{}{}
+			merged = append(merged, proxy)
+		}
+	}
+	if len(merged) == 0 {
+		return nil, nil, fmt.Errorf("merged Clash subscriptions have no proxies")
+	}
+	mergedConfig["proxies"] = merged
+	result, err := yaml.Marshal(mergedConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("write merged Clash YAML: %w", err)
+	}
+	proxies, err := Parse(result)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result, proxies, nil
 }

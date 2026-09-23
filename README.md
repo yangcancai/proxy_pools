@@ -16,7 +16,7 @@ Pass a Clash subscription URL directly. proxy-pools downloads the matching Mihom
 
 ## One-command installation (Linux)
 
-The installer downloads the latest Linux binary from GitHub Releases and registers a systemd service. The target machine must have `systemd` and `curl`; the command must be run with root privileges.
+The installer downloads the latest Linux binary from GitHub Releases and registers a systemd service. The target machine must have `systemd`, `curl`, and `openssl`; the command must be run with root privileges.
 
 Install without configuring a subscription:
 
@@ -36,11 +36,14 @@ The installer creates the `proxy-pools` system user and installs:
 | --- | --- |
 | `/opt/proxy-pools/proxy_pools` | Installed binary |
 | `/etc/proxy-pools/proxy-pools.env` | Subscription and Mihomo settings |
+| `/etc/proxy-pools/subscriptions.key` | Local encryption key for subscriptions |
+| `/var/lib/proxy-pools/subscriptions.enc` | Encrypted subscription list |
+| `/var/lib/proxy-pools/listeners.tsv` | Current node and SOCKS5 port list |
 | `/etc/proxy-pools/version` | Installed Release version |
 | `/etc/systemd/system/proxy-pools.service` | systemd service |
 | `/usr/local/bin/pp` | Service management command |
 
-The command is safe to run again after a new Release; it replaces the binary and restarts the service. The subscription URL is stored in the environment file, so avoid exposing that file if the URL contains credentials.
+The command is safe to run again after a new Release; it replaces the binary and restarts the service. Subscription URLs are stored encrypted in `/var/lib/proxy-pools/subscriptions.enc`; the environment file contains only runtime settings.
 
 After installation, use `pp`:
 
@@ -50,13 +53,21 @@ pp stop        Stop the service
 pp restart     Restart the service
 pp status      Show service status
 pp list        Show nodes, ports, and SOCKS5 endpoints
+pp subscriptions  Show configured subscriptions
+pp add URL      Add a subscription and restart
+pp remove N     Remove a subscription and restart
+pp update       Refresh subscriptions now
 pp log         Follow service logs
 pp version     Show the installed version
 pp help        Show help and the project sponsor link
 pp <URL>       Set the subscription URL and restart
 ```
 
+Multiple subscriptions are merged by node name; duplicate names keep the first subscription's node. Subscription URLs are stored encrypted on disk. The node-to-port mapping is persisted, so existing nodes keep their SOCKS5 ports across restarts and reinstallations when possible.
+
 The default Mihomo controller is `http://127.0.0.1:9090`. Configure `MIHOMO_CONTROLLER`, `MIHOMO_SECRET`, or `MIHOMO_PORT_START` in `/etc/proxy-pools/proxy-pools.env`, then run `pp restart`.
+
+Managed subscriptions refresh every hour by default. Set `MIHOMO_SUBSCRIPTION_REFRESH=30m` to change the interval, or run `sudo pp update` for an immediate refresh.
 
 For example:
 

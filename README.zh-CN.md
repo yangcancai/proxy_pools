@@ -16,7 +16,7 @@
 
 ## 一键安装（Linux）
 
-安装脚本会从 GitHub Release 下载最新 Linux 产物并注册 systemd 服务。目标机器需要安装 `systemd` 和 `curl`，并使用 root 权限执行。
+安装脚本会从 GitHub Release 下载最新 Linux 产物并注册 systemd 服务。目标机器需要安装 `systemd`、`curl` 和 `openssl`，并使用 root 权限执行。
 
 只安装程序，不设置订阅：
 
@@ -36,11 +36,14 @@ curl -fsSL https://raw.githubusercontent.com/yangcancai/proxy_pools/main/deploy/
 | --- | --- |
 | `/opt/proxy-pools/proxy_pools` | 程序文件 |
 | `/etc/proxy-pools/proxy-pools.env` | 订阅地址和 Mihomo 配置 |
+| `/etc/proxy-pools/subscriptions.key` | 订阅加密密钥 |
+| `/var/lib/proxy-pools/subscriptions.enc` | 加密后的订阅列表 |
+| `/var/lib/proxy-pools/listeners.tsv` | 当前节点和 SOCKS5 端口列表 |
 | `/etc/proxy-pools/version` | 已安装的 Release 版本 |
 | `/etc/systemd/system/proxy-pools.service` | systemd 服务 |
 | `/usr/local/bin/pp` | 服务管理命令 |
 
-发布新版本后重复执行安装命令即可升级，程序会替换二进制并重启服务。订阅地址会保存在环境文件中，如果 URL 包含凭据，请注意保护该文件。
+发布新版本后重复执行安装命令即可升级，程序会替换二进制并重启服务。订阅地址会加密保存在 `/var/lib/proxy-pools/subscriptions.enc`，环境文件只保存运行配置。
 
 安装后使用 `pp`：
 
@@ -50,13 +53,21 @@ pp stop        停止
 pp restart     重启
 pp status      查看状态
 pp list        查看节点、端口和 SOCKS5 地址
+pp subscriptions  查看当前订阅列表
+pp add URL      添加订阅并重启
+pp remove N     删除订阅并重启
+pp update       立即更新订阅
 pp log         查看实时日志
 pp version     查看版本
 pp help        查看帮助和项目广告
 pp <URL>       设置订阅地址并重启
 ```
 
+多个订阅会按节点名称合并，重名节点保留第一个订阅中的版本。订阅地址会加密保存；节点和 SOCKS5 端口映射会持久化，重启或重新安装后会尽量复用已有端口。
+
 默认 Mihomo Controller 地址为 `http://127.0.0.1:9090`，可以在 `/etc/proxy-pools/proxy-pools.env` 中配置 `MIHOMO_CONTROLLER`、`MIHOMO_SECRET` 和 `MIHOMO_PORT_START`，然后执行 `pp restart`。
+
+订阅默认每小时自动更新。可以设置 `MIHOMO_SUBSCRIPTION_REFRESH=30m` 修改间隔，或执行 `sudo pp update` 立即更新。
 
 例如：
 
