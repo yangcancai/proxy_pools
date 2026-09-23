@@ -14,7 +14,7 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: pp <start|stop|restart|status|list|log|version|help>
+Usage: pp <start|stop|restart|status|list|log|version|help|subscription-url>
 
   start    Start proxy-pools and Mihomo
   stop     Stop proxy-pools and Mihomo
@@ -23,6 +23,8 @@ Usage: pp <start|stop|restart|status|list|log|version|help>
   list     Show node names, local ports, and SOCKS5 endpoints
   log      Follow recent service logs
   version  Show the installed version
+
+  URL      Set the Clash subscription URL and restart the service
 
   更多信息：https://portguard.net
 EOF
@@ -35,6 +37,17 @@ case "${1:-}" in
   status) systemctl status "$SERVICE" --no-pager ;;
   log) journalctl -u "$SERVICE" -n "${2:-100}" -f ;;
   version|--version|-v) echo "proxy-pools $version" ;;
+  http://*|https://*)
+    if [[ "$(id -u)" -ne 0 ]]; then
+      echo "Run as root: sudo pp '$1'" >&2
+      exit 1
+    fi
+    install -d -m 0750 /etc/proxy-pools
+    printf 'PROXY_SUBSCRIPTION_URL=%q\n' "$1" > /etc/proxy-pools/proxy-pools.env
+    chmod 0600 /etc/proxy-pools/proxy-pools.env
+    systemctl restart "$SERVICE"
+    echo "Subscription updated and service restarted."
+    ;;
   list)
     if ! systemctl is-active --quiet "$SERVICE"; then
       echo "proxy-pools is not running" >&2
